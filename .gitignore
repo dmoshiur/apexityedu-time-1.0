@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local data, logs, secrets — never commit
+.env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/
+logs/
+backups/
+secrets.json
+*.diag.zip
+
+# Test/tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

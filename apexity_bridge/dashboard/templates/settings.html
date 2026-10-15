@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block page %}settings{% endblock %}
+{% block title %}Settings — ApexityEdu Bridge{% endblock %}
+{% block content %}
+<div class="grid two">
+  <div class="card">
+    <h3>EMS connection</h3>
+    <form id="settings-form">
+      <label>EMS base URL <input name="ems_base_url" placeholder="https://apexityedu.com"></label>
+      <label>Protocol
+        <select name="ems_protocol">
+          <option value="">(from environment)</option>
+          <option value="auto">auto (probe)</option>
+          <option value="iclock">iClock / ADMS push</option>
+          <option value="rest">REST bridge API</option>
+        </select>
+      </label>
+      <label>Device timezone <input name="device_timezone" placeholder="Asia/Dhaka"></label>
+      <label>Scan interval (s) <input name="scan_interval" type="number" min="60"></label>
+      <label>Collect interval (s) <input name="collect_interval" type="number" min="5"></label>
+      <label>Sync retry base (s) <input name="sync_interval" type="number" min="5"></label>
+      <label>Roster interval (s) <input name="roster_interval" type="number" min="60"></label>
+      <div class="dialog-actions">
+        <button class="primary" type="submit">Save settings</button>
+        <button type="button" id="btn-ems-test">Test EMS connection</button>
+      </div>
+    </form>
+    <div id="settings-status" class="muted"></div>
+    <div id="ems-test-result"></div>
+    <p class="muted">The EMS device token is stored in Windows Credential Manager
+      (<code>python -m apexity_bridge set-token</code>), never in this database or .env.
+      Token configured: <strong id="token-configured">…</strong></p>
+  </div>
+  <div>
+    <div class="card">
+      <h3>Backup &amp; diagnostics</h3>
+      <div class="toolbar column">
+        <button id="btn-backup">💾 Backup database now</button>
+        <button id="btn-diag">📦 Export diagnostics bundle (secrets redacted)</button>
+        <a id="diag-download" class="button hidden" href="#">Download bundle</a>
+      </div>
+      <div id="backup-status" class="muted"></div>
+    </div>
+    <div class="card">
+      <h3>Security notes</h3>
+      <ul class="notes">
+        <li>Dashboard binds to <code>127.0.0.1</code>; LAN exposure requires an explicit env opt-in.</li>
+        <li>All forms are CSRF-protected; logins are rate-limited.</li>
+        <li>Fingerprint templates are never downloaded or uploaded by this software.</li>
+        <li>Device logs on the K40 are never deleted by the bridge.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+{% endblock %}

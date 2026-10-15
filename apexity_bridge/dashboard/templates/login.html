@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — ApexityEdu Bridge</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body class="login-page">
+<div class="login-card">
+  <h1>ApexityEdu <span>Smart Attendance Bridge</span></h1>
+  {% if setup_required %}
+    <div class="notice warn">
+      <strong>Dashboard password not configured.</strong>
+      <p>No login is possible until an administrator password is set. On this PC run:</p>
+      <pre>python -m apexity_bridge set-admin-password</pre>
+      <p>The password is stored as a salted PBKDF2 hash — never in plaintext.</p>
+    </div>
+  {% endif %}
+  {% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+  <form method="post" autocomplete="off">
+    <label>Username <input name="username" required maxlength="64" value="admin"></label>
+    <label>Password <input name="password" type="password" required {% if setup_required %}disabled{% endif %}></label>
+    <button type="submit" {% if setup_required %}disabled{% endif %}>Sign in</button>
+  </form>
+</div>
+</body>
+</html>

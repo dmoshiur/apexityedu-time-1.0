@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block page %}students{% endblock %}
+{% block title %}Students — ApexityEdu Bridge{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <input id="student-search" type="search" placeholder="Search name / ID / roll…">
+  <select id="filter-class"><option value="">Class: all</option></select>
+  <select id="filter-section"><option value="">Section: all</option></select>
+  <select id="filter-active"><option value="all">Active+inactive</option><option value="1">Active</option><option value="0">Inactive</option></select>
+  <button id="btn-refresh-roster">⟳ Refresh from EMS</button>
+  <span id="roster-status" class="muted"></span>
+</div>
+<div id="roster-error" class="notice error hidden"></div>
+<div class="card">
+  <table id="students-table">
+    <thead><tr>
+      <th data-sort="name">Name</th><th>EMS ID</th><th>Admission №</th><th>Roll</th>
+      <th data-sort="class_name">Class</th><th>Section</th><th>Status</th>
+      <th>Biometric user</th><th>Mapping</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="pager"><button id="prev-page">‹</button> <span id="page-info"></span> <button id="next-page">›</button></div>
+</div>
+<div class="grid two">
+  <div class="card">
+    <h3>Unmapped device users <span class="muted">(seen punching, no student linked)</span></h3>
+    <table id="unmapped-table"><thead><tr><th>Device</th><th>Device user ID</th><th>Events</th><th>Last seen</th><th>Map to student</th></tr></thead><tbody></tbody></table>
+  </div>
+  <div class="card">
+    <h3>Mapping conflicts &amp; problems</h3>
+    <div id="mapping-review" class="review"></div>
+    <h4>Bulk CSV</h4>
+    <div class="toolbar">
+      <a class="button" href="{{ url_for('api_mappings_export') }}" download>⬇ Export mappings.csv</a>
+      <form id="csv-import-form" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".csv" required>
+        <button class="primary" type="submit">⬆ Import (validated)</button>
+      </form>
+    </div>
+    <div id="csv-import-result" class="muted"></div>
+  </div>
+</div>
+<dialog id="map-dialog">
+  <form id="map-form">
+    <h3>Map biometric user to student</h3>
+    <input type="hidden" name="device_serial">
+    <label>Device user ID <input name="device_user_id" required></label>
+    <label>Student (EMS ID or search)
+      <input name="ems_student_id" list="students-datalist" required placeholder="type to search by name…">
+    </label>
+    <datalist id="students-datalist"></datalist>
+    <div class="dialog-actions">
+      <button type="submit" class="primary">Save mapping</button>
+      <button type="button" id="map-cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
