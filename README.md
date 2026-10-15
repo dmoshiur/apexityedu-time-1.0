@@ -1,1 +1,89 @@
-# apexityedu-time-1.0
+# ApexityEdu Smart Attendance Bridge
+
+Connects ZKTeco **K40** fingerprint terminals on the school LAN to the
+**ApexityEdu EMS** (`https://apexityedu.com`) — reliably, offline-first, and
+without depending on ZKTime 5.0.
+
+- **Automatic LAN discovery** of K40 terminals with verified-identity IP
+  repair (serial number first — never by IP alone).
+- **Direct device communication** via the maintained `pyzk` ZK-protocol
+  library (TCP/UDP 4370), strictly **read-only**: device logs are never
+  deleted and fingerprint templates are never touched.
+- **Offline-first sync**: every punch is persisted to local SQLite before any
+  internet call, pushed to the EMS with idempotency keys and exponential
+  backoff, and resumes exactly where it stopped after restarts/outages.
+- **Student directory + mapping UI** driven by the real EMS roster
+  (`device user → EMS student`), with conflict detection and validated CSV
+  bulk import/export.
+- **Local dashboard** (`http://127.0.0.1:8321`): overview, devices, students,
+  attendance, logs, settings — authenticated, CSRF-protected, localhost-only
+  by default.
+- **Windows auto-start** via Task Scheduler with restart-on-failure,
+  single-instance guard, and a one-command installer/uninstaller.
+
+> **Honest status.** The bridge software is complete and covered by 116
+> automated tests. Two things can only be finished on site, and the software
+> will tell you plainly instead of guessing: (1) what protocol
+> `apexityedu.com` actually accepts for attendance — run
+> `python -m apexity_bridge probe-ems` on the school PC; the exact required
+> server-side changes (if any) are in
+> [`docs/EMS_API_CONTRACT.md`](docs/EMS_API_CONTRACT.md); (2) real-device
+> acceptance — execute [`docs/ACCEPTANCE_TEST_PLAN.md`](docs/ACCEPTANCE_TEST_PLAN.md).
+
+## Quick start — Windows 10/11
+
+```powershell
+cd "E:\Software Run\ZKTeco"
+git clone <this-repo-url> apexityedu-bridge
+cd apexityedu-bridge
+powershell -ExecutionPolicy Bypass -File scripts\Install-ApexityBridge.ps1
+```
+
+Then open **http://127.0.0.1:8321** and follow the on-screen flow. Full guide:
+[`docs/WINDOWS_DEPLOYMENT.md`](docs/WINDOWS_DEPLOYMENT.md).
+
+## Everyday operations (PowerShell)
+
+```powershell
+.\scripts\Service-Control.ps1 status     # start | stop | restart | status
+.\.venv\Scripts\python.exe -m apexity_bridge probe-ems                 # what does the EMS accept?
+.\.venv\Scripts\python.exe -m apexity_bridge scan                      # discovery + identification (read-only)
+.\.venv\Scripts\python.exe -m apexity_bridge scan --ip 192.168.0.201 --read-attendance 5
+.\.venv\Scripts\python.exe -m apexity_bridge set-token                 # EMS token → Credential Manager
+.\.venv\Scripts\python.exe -m apexity_bridge backup                    # consistent SQLite backup
+```
+
+## Configuration
+
+Everything lives in `.env` (copy of [`.env.example`](.env.example)) — EMS URL
+and protocol, dashboard port, scan/collect/sync intervals, device comm key,
+extra subnets. A handful of values (EMS URL/protocol, intervals, device
+timezone) can also be changed from **Settings** in the dashboard at runtime.
+Secrets are never in `.env` — the EMS device token goes to Windows Credential
+Manager, the dashboard password is stored as a PBKDF2 hash.
+
+## Development
+
+```bash
+python3 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
+./scripts/run_tests.sh                     # 116 automated tests
+./scripts/dev_run.sh                       # run the bridge in the foreground
+```
+
+## Documentation
+
+| Doc | Contents |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | design, identity rules, offline-first guarantees, security model, documented limitations |
+| [`docs/EMS_API_CONTRACT.md`](docs/EMS_API_CONTRACT.md) | **required EMS-side API** (iClock/ADMS + REST) + reference implementation |
+| [`docs/WINDOWS_DEPLOYMENT.md`](docs/WINDOWS_DEPLOYMENT.md) | install / update / uninstall / service details |
+| [`docs/ACCEPTANCE_TEST_PLAN.md`](docs/ACCEPTANCE_TEST_PLAN.md) | 16-scenario on-site verification gate |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | diagnostics bundle, common issues |
+
+## Security & privacy
+
+Localhost-only dashboard with session auth, CSRF + origin checks and login
+throttling; secrets in the OS credential store; HTTPS-only remote transport;
+no fingerprint templates, ever; audit log of every admin action; redacted
+diagnostic exports. Attendance is personal data — the bridge keeps collection
+and retention to the minimum the school needs.

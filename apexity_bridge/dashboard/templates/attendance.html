@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block page %}attendance{% endblock %}
+{% block title %}Attendance — ApexityEdu Bridge{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <input id="event-search" type="search" placeholder="Search user / student / device…">
+  <select id="event-status">
+    <option value="">All statuses</option>
+    <option value="pending">Pending</option>
+    <option value="synced">Synced</option>
+    <option value="failed">Failed</option>
+    <option value="review">Review required</option>
+    <option value="rejected">Rejected by EMS</option>
+  </select>
+  <button id="btn-retry-selected" class="primary">Retry selected</button>
+  <span class="muted">Timestamps shown exactly as the terminal reported them ({{ 'device time' }}).</span>
+</div>
+<div class="card">
+  <table id="events-table">
+    <thead><tr>
+      <th><input type="checkbox" id="select-all"></th>
+      <th>Event time</th><th>Student</th><th>Device user</th><th>Device</th>
+      <th>Punch/Status</th><th>Sync</th><th>Attempts</th><th>Last error</th><th>EMS id</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="pager"><button id="prev-page">‹</button> <span id="page-info"></span> <button id="next-page">›</button></div>
+</div>
+{% endblock %}

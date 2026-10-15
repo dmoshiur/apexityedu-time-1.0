@@ -1,0 +1,80 @@
+:root {
+  --bg: #0f172a; --panel: #1e293b; --panel2: #263548; --text: #e2e8f0;
+  --muted: #94a3b8; --accent: #38bdf8; --accent2: #0ea5e9; --ok: #4ade80;
+  --warn: #fbbf24; --err: #f87171; --border: #334155;
+}
+[data-theme="light"] {
+  --bg: #f1f5f9; --panel: #ffffff; --panel2: #f8fafc; --text: #0f172a;
+  --muted: #64748b; --border: #e2e8f0;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
+a { color: var(--accent); text-decoration: none; }
+.topbar { display: flex; align-items: center; gap: 24px; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; }
+.brand { font-weight: 700; font-size: 17px; }
+.brand span { color: var(--muted); font-weight: 400; font-size: 13px; }
+.topbar nav { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
+.topbar nav a { color: var(--muted); padding: 6px 12px; border-radius: 8px; }
+.topbar nav a.active, .topbar nav a:hover { color: var(--text); background: var(--panel2); }
+.user { display: flex; align-items: center; gap: 10px; }
+.logout { color: var(--muted); }
+.content { padding: 20px; max-width: 1500px; margin: 0 auto; }
+.footer { padding: 12px 20px; color: var(--muted); font-size: 12px; text-align: center; }
+.grid { display: grid; gap: 14px; }
+.grid.cards { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); margin-bottom: 14px; }
+.grid.two { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; overflow-x: auto; }
+.card h3 { margin: 0 0 10px; font-size: 14px; color: var(--muted); font-weight: 600; }
+.card h4 { margin: 14px 0 8px; }
+.big { font-size: 26px; font-weight: 700; }
+.muted { color: var(--muted); font-size: 12px; }
+.pill { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.pill.ok { background: #14532d; color: var(--ok); }
+.pill.err { background: #450a0a; color: var(--err); }
+.pill.unknown { background: var(--panel2); color: var(--muted); }
+.flash { position: fixed; top: 54px; right: 20px; padding: 10px 16px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--border); box-shadow: 0 8px 24px #0008; z-index: 50; max-width: 420px; }
+.flash.error { border-color: var(--err); color: var(--err); }
+.flash.success { border-color: var(--ok); color: var(--ok); }
+.hidden { display: none !important; }
+.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.toolbar.column { flex-direction: column; align-items: stretch; }
+button, .button { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 7px 14px; cursor: pointer; font-size: 13px; }
+button:hover, .button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent2); border-color: var(--accent2); color: #fff; }
+button.danger { border-color: var(--err); color: var(--err); }
+button:disabled { opacity: .5; cursor: default; }
+input, select { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; }
+tbody tr:hover { background: var(--panel2); }
+.tag { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.tag.registered, .tag.synced, .tag.resolved, .tag.success, .tag.active { background: #14532d; color: var(--ok); }
+.tag.pending, .tag.review { background: #422006; color: var(--warn); }
+.tag.failed, .tag.rejected, .tag.disabled, .tag.inactive { background: #450a0a; color: var(--err); }
+.tag.unmapped, .tag.ambiguous, .tag.partial { background: #3b0764; color: #d8b4fe; }
+.tag.inactive_student { background: #422006; color: var(--warn); }
+.pager { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 10px; color: var(--muted); }
+.logbox { background: #020617; color: #a5f3fc; padding: 12px; border-radius: 8px; font: 12px/1.45 ui-monospace, Consolas, monospace; max-height: 420px; overflow: auto; white-space: pre-wrap; }
+.notice { padding: 10px 14px; border-radius: 10px; margin-bottom: 12px; }
+.notice.warn { background: #422006; color: var(--warn); border: 1px solid var(--warn); }
+.notice.error { background: #450a0a; color: var(--err); border: 1px solid var(--err); }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 14px; padding: 18px 22px; min-width: 380px; }
+dialog::backdrop { background: #000a; }
+dialog form label { display: block; margin: 10px 0; color: var(--muted); }
+dialog form label input, dialog form label select { display: block; width: 100%; margin-top: 4px; color: var(--text); }
+.dialog-actions { display: flex; gap: 10px; margin-top: 16px; }
+.login-page { display: flex; min-height: 100vh; align-items: center; justify-content: center; }
+.login-card { background: var(--panel); border: 1px solid var(--border); padding: 30px 34px; border-radius: 16px; width: 400px; }
+.login-card h1 { margin: 0 0 18px; font-size: 20px; }
+.login-card h1 span { display: block; font-size: 13px; color: var(--muted); font-weight: 400; }
+.login-card form label { display: block; margin: 12px 0; color: var(--muted); }
+.login-card form label input { display: block; width: 100%; margin-top: 4px; }
+.login-card button { width: 100%; margin-top: 4px; background: var(--accent2); border: none; color: #fff; padding: 10px; }
+pre { background: var(--panel2); padding: 8px 12px; border-radius: 8px; overflow-x: auto; }
+code { background: var(--panel2); padding: 1px 5px; border-radius: 5px; }
+.review ul { margin: 6px 0; padding-left: 18px; }
+.notes li { margin: 6px 0; color: var(--muted); }
+#settings-form label { display: block; margin: 10px 0; color: var(--muted); }
+#settings-form label input, #settings-form label select { display: block; width: 100%; margin-top: 4px; }
+@media (max-width: 720px) { .topbar { flex-wrap: wrap; } th, td { white-space: normal; } }

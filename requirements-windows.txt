@@ -1,0 +1,4 @@
+# Windows-only extras: install ON the target Windows PC, after requirements.txt:
+#   pip install -r requirements-windows.txt
+-r requirements.txt
+pywin32>=306            # optional native Windows service wrapper (Task Scheduler is the default and does NOT need this)

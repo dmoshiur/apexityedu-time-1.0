@@ -1,0 +1,9 @@
+# ApexityEdu Smart Attendance Bridge — runtime dependencies (CPython 3.10+)
+# Locked by feature version; install with: pip install -r requirements.txt
+pyzk>=0.9,<1.0          # ZKTeco ZK-protocol (TCP/UDP push SDK protocol on port 4370)
+Flask>=3.0,<4.0         # local dashboard web framework
+waitress>=3.0,<4.0      # production WSGI server for the dashboard
+requests>=2.31,<3.0     # EMS HTTP client (HTTPS enforced outside localhost)
+psutil>=5.9,<7.0        # network interface enumeration for LAN discovery
+python-dotenv>=1.0,<2.0 # .env loading for local configuration
+keyring>=24.0,<26.0     # Windows Credential Manager / secure secret storage

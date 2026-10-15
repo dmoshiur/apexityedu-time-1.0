@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apexityedu-attendance-bridge"
+version = "1.0.0"
+description = "ApexityEdu Smart Attendance Bridge — connects ZKTeco K40 terminals on the school LAN to the ApexityEdu EMS with offline-first sync."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+
+[tool.setuptools.packages.find]
+include = ["apexity_bridge*"]
+
+[tool.setuptools.package-data]
+"apexity_bridge.dashboard" = ["templates/*.html", "static/*.css", "static/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "slow: exercises real service threads with timing waits",
+]

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block page %}logs{% endblock %}
+{% block title %}Logs — ApexityEdu Bridge{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <input id="log-search" type="search" placeholder="Search audit log…">
+  <select id="log-action"><option value="">All actions</option></select>
+  <span class="muted">Passwords/tokens are redacted and never written to logs.</span>
+</div>
+<div class="card">
+  <h3>Audit log</h3>
+  <table id="audit-table"><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Entity</th><th>Detail</th></tr></thead><tbody></tbody></table>
+  <div class="pager"><button id="prev-page">‹</button> <span id="page-info"></span> <button id="next-page">›</button></div>
+</div>
+<div class="card">
+  <h3>Application log <span class="muted">(last 200 lines)</span></h3>
+  <input id="app-log-search" type="search" placeholder="filter…">
+  <pre id="app-log" class="logbox"></pre>
+</div>
+<div class="card">
+  <h3>Sync attempts</h3>
+  <table id="attempts-table"><thead><tr><th>Time</th><th>Type</th><th>Events</th><th>Result</th><th>Error</th><th>ms</th></tr></thead><tbody></tbody></table>
+</div>
+{% endblock %}

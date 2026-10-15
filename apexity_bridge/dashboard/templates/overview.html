@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block page %}overview{% endblock %}
+{% block title %}Overview — ApexityEdu Bridge{% endblock %}
+{% block content %}
+<div class="grid cards" id="stat-cards">
+  <div class="card"><h3>Bridge service</h3><div class="big" id="st-uptime">…</div><div class="muted" id="st-version"></div></div>
+  <div class="card"><h3>Internet / EMS</h3><div class="big" id="st-ems">…</div><div class="muted" id="st-ems-detail"></div></div>
+  <div class="card"><h3>Devices</h3><div class="big" id="st-devices">…</div><div class="muted" id="st-devices-detail"></div></div>
+  <div class="card"><h3>Students (EMS)</h3><div class="big" id="st-students">…</div><div class="muted" id="st-mappings"></div></div>
+  <div class="card"><h3>Pending events</h3><div class="big" id="st-pending">…</div><div class="muted" id="st-queue"></div></div>
+  <div class="card"><h3>Synced total</h3><div class="big" id="st-synced">…</div><div class="muted" id="st-lastsync"></div></div>
+  <div class="card"><h3>Failed / review</h3><div class="big" id="st-failed">…</div><div class="muted">auto-retry with backoff</div></div>
+</div>
+<div class="card">
+  <h3>Recent sync attempts</h3>
+  <table id="attempts-table"><thead><tr><th>Time</th><th>Type</th><th>Events</th><th>Result</th><th>Detail</th></tr></thead><tbody></tbody></table>
+</div>
+{% endblock %}

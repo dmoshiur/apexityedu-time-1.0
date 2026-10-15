@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block page %}devices{% endblock %}
+{% block title %}Devices — ApexityEdu Bridge{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <button id="btn-scan" class="primary">⟳ Scan LAN now</button>
+  <button id="btn-manual-add">+ Manual registration (by IP)</button>
+  <span id="scan-status" class="muted"></span>
+</div>
+<div class="card">
+  <table id="devices-table" class="sortable">
+    <thead><tr>
+      <th>Status</th><th>Label</th><th>Serial</th><th>Model</th><th>IP</th><th>Port</th>
+      <th>MAC</th><th>Firmware</th><th>Last seen</th><th>Events</th><th>Actions</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+<div class="card" id="ip-changes-card">
+  <h3>Last scan</h3>
+  <div id="last-scan" class="muted">no scan yet</div>
+</div>
+<dialog id="manual-dialog">
+  <form id="manual-form">
+    <h3>Manual device registration</h3>
+    <p class="muted">The bridge connects immediately and requires the terminal to prove its serial number — a device is never registered on the strength of an IP alone.</p>
+    <label>IP address <input name="ip" required placeholder="192.168.0.201"></label>
+    <label>Port <input name="port" type="number" value="4370"></label>
+    <label>Comm key (0 if none) <input name="comm_key" type="number" value="0"></label>
+    <div class="dialog-actions">
+      <button type="submit" class="primary">Verify &amp; add</button>
+      <button type="button" id="manual-cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
