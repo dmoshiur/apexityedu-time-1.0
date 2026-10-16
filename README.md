@@ -15,14 +15,15 @@ without depending on ZKTime 5.0.
 - **Student directory + mapping UI** driven by the real EMS roster
   (`device user → EMS student`), with conflict detection and validated CSV
   bulk import/export.
-- **Local dashboard** (`http://127.0.0.1:8321`): overview, devices, students,
-  attendance, logs, settings — authenticated, CSRF-protected, localhost-only
-  by default.
-- **Windows auto-start** via Task Scheduler with restart-on-failure,
-  single-instance guard, and a one-command installer/uninstaller.
+- **Native Windows desktop app** (no browser): Overview, Devices, Students,
+  Attendance, Logs, Settings — sharp 90° cards, system tray, same process as
+  the background service.
+- **Always-on background service** with Task Scheduler auto-start at boot:
+  reconnects K40s and resumes the offline sync queue after a PC restart.
 
-> **Honest status.** The bridge software is complete and covered by 116
-> automated tests. Two things can only be finished on site, and the software
+> **Honest status.** The bridge software is complete and covered by 127
+> automated tests. A branded Windows installer produces `ApexityEduBridge.exe`
+> with the product logo (Start Menu, Desktop, tray). Two things can only be finished on site, and the software
 > will tell you plainly instead of guessing: (1) what protocol
 > `apexityedu.com` actually accepts for attendance — run
 > `python -m apexity_bridge probe-ems` on the school PC; the exact required
@@ -32,6 +33,24 @@ without depending on ZKTime 5.0.
 
 ## Quick start — Windows 10/11
 
+**Preferred:** install the branded Windows application (no Python required).
+
+1. Download **`ApexityEduBridge-Setup-1.0.0.exe`** from
+   [GitHub Actions artifacts](../../actions) (workflow *Build Windows installer*)
+   or build it locally with `packaging\build.ps1` — see
+   [`docs/WINDOWS_PACKAGING.md`](docs/WINDOWS_PACKAGING.md).
+2. Double-click the installer. It copies the app into
+   `C:\Program Files\ApexityEdu\Attendance Bridge\`, creates a **Start Menu**
+   and **Desktop** shortcut with the ApexityEdu logo, and optionally starts
+   at sign-in.
+3. Launch **ApexityEdu Bridge**. A native desktop window opens (not a
+   browser) and a tray icon stays in the background. First run is a setup
+   wizard (password + optional EMS token). Closing the window hides it —
+   the bridge keeps collecting. Exit from the tray to stop. After a PC
+   restart the app auto-starts hidden, reconnects devices, and resumes sync.
+
+Developer / source install (Python 3.10+ still required):
+
 ```powershell
 cd "E:\Software Run\ZKTeco"
 git clone <this-repo-url> apexityedu-bridge
@@ -39,8 +58,7 @@ cd apexityedu-bridge
 powershell -ExecutionPolicy Bypass -File scripts\Install-ApexityBridge.ps1
 ```
 
-Then open **http://127.0.0.1:8321** and follow the on-screen flow. Full guide:
-[`docs/WINDOWS_DEPLOYMENT.md`](docs/WINDOWS_DEPLOYMENT.md).
+Full guide: [`docs/WINDOWS_DEPLOYMENT.md`](docs/WINDOWS_DEPLOYMENT.md).
 
 ## Everyday operations (PowerShell)
 
@@ -77,6 +95,7 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | design, identity rules, offline-first guarantees, security model, documented limitations |
 | [`docs/EMS_API_CONTRACT.md`](docs/EMS_API_CONTRACT.md) | **required EMS-side API** (iClock/ADMS + REST) + reference implementation |
 | [`docs/WINDOWS_DEPLOYMENT.md`](docs/WINDOWS_DEPLOYMENT.md) | install / update / uninstall / service details |
+| [`docs/WINDOWS_PACKAGING.md`](docs/WINDOWS_PACKAGING.md) | **Windows .exe + installer** (PyInstaller + Inno Setup) |
 | [`docs/ACCEPTANCE_TEST_PLAN.md`](docs/ACCEPTANCE_TEST_PLAN.md) | 16-scenario on-site verification gate |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | diagnostics bundle, common issues |
 

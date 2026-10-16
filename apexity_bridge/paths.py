@@ -24,6 +24,17 @@ def is_windows() -> bool:
     return sys.platform.startswith("win")
 
 
+def is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def app_dir() -> Path:
+    """Directory containing the running executable, or the repository root."""
+    if is_frozen():
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
 def default_data_dir() -> Path:
     """Base directory that holds the DB, backups, and (by default) logs."""
     override = os.environ.get("BRIDGE_DATA_DIR", "").strip()

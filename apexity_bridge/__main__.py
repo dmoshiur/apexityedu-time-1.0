@@ -3,7 +3,8 @@
     python -m apexity_bridge [command]
 
 Commands
-    run                  start the full bridge service (default)
+    run                  start the full bridge service (default on source)
+    tray                 start native desktop app + tray (default .exe)
     init-db              initialise/migrate the SQLite database
     scan                 connectivity-proof tool: discover/identify terminals
                          and optionally READ attendance (never writes to devices)
@@ -27,6 +28,33 @@ from .config import load_config
 from .logging_utils import setup_logging
 
 
+def _attach_console() -> None:
+    """Give a windowed (noconsole) frozen exe a console for CLI commands."""
+    if not (sys.platform.startswith("win") and getattr(sys, "frozen", False)):
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        if kernel32.GetConsoleWindow():
+            return
+        if not kernel32.AttachConsole(-1):  # parent is cmd.exe / PowerShell
+            return
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+        sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+        try:
+            sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+    except Exception:
+        pass
+
+
+def _default_command() -> str:
+    if sys.platform.startswith("win") and getattr(sys, "frozen", False):
+        return "tray"
+    return "run"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apexity_bridge",
                                      description="ApexityEdu Smart Attendance Bridge")
@@ -35,6 +63,10 @@ def main(argv: list[str] | None = None) -> int:
 
     run_p = sub.add_parser("run", help="start the bridge service (default)")
     run_p.add_argument("--no-dashboard", action="store_true", help="run headless")
+
+    tray_p = sub.add_parser("tray", help="start the native desktop app + tray")
+    tray_p.add_argument("--hidden", action="store_true",
+                        help="background only — no window (used by auto-start)")
 
     sub.add_parser("init-db", help="create/migrate the SQLite database and exit")
 
@@ -63,13 +95,15 @@ def main(argv: list[str] | None = None) -> int:
                                           "restart", "status"])
 
     args = parser.parse_args(argv)
-    command = args.command or "run"
+    command = args.command or _default_command()
+    if command not in ("run", "tray"):
+        _attach_console()
     config = load_config()
     setup_logging(config.log_level, config.log_dir)
 
     handler = {
-        "run": _cmd_run, "init-db": _cmd_init_db, "scan": _cmd_scan,
-        "probe-ems": _cmd_probe_ems, "set-token": _cmd_set_token,
+        "run": _cmd_run, "tray": _cmd_tray, "init-db": _cmd_init_db,
+        "scan": _cmd_scan, "probe-ems": _cmd_probe_ems, "set-token": _cmd_set_token,
         "delete-token": _cmd_delete_token,
         "set-admin-password": _cmd_set_admin_password,
         "backup": _cmd_backup, "export-diagnostics": _cmd_diagnostics,
@@ -81,12 +115,27 @@ def main(argv: list[str] | None = None) -> int:
 # --------------------------------------------------------------------------- --
 def _cmd_run(config, args) -> int:
     from .service import BridgeService
-    service = BridgeService(config, start_dashboard=not args.no_dashboard)
+    from .windows_service.singleton import SingleInstance
     try:
-        service.run_forever()
-    except KeyboardInterrupt:
-        service.stop()
+        with SingleInstance():
+            service = BridgeService(config, start_dashboard=not args.no_dashboard)
+            try:
+                service.run_forever()
+            except KeyboardInterrupt:
+                service.stop()
+    except RuntimeError:
+        from .desktop.ipc import notify_running_instance
+        if notify_running_instance():
+            print("ApexityEdu Bridge is already running — brought the window to the front.")
+        else:
+            print("ApexityEdu Bridge is already running.")
+        return 0
     return 0
+
+
+def _cmd_tray(config, args) -> int:
+    from .tray import run_tray
+    return run_tray(config, open_browser=not args.hidden)
 
 
 def _cmd_init_db(config, args) -> int:

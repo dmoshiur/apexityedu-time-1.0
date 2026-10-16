@@ -27,12 +27,29 @@ def _is_windows() -> bool:
     return sys.platform.startswith("win")
 
 
-def task_xml(*, python_exe: str, workdir: str, logon_user: str | None = None) -> str:
+def launch_command() -> tuple[str, str, str]:
+    """(executable, arguments, working_directory) for auto-start.
+
+    Frozen installs run ApexityEduBridge.exe (tray, hidden). Source
+    checkouts keep the historical ``pythonw -m apexity_bridge run``.
+    """
+    if getattr(sys, "frozen", False):
+        exe = str(Path(sys.executable).resolve())
+        workdir = str(Path(exe).parent)
+        return exe, "tray --hidden", workdir
+    python_exe = str(Path(sys.executable))
+    workdir = str(Path.cwd())
+    return python_exe, "-m apexity_bridge run", workdir
+
+
+def task_xml(*, python_exe: str, workdir: str, logon_user: str | None = None,
+             arguments: str | None = None) -> str:
     """Task: at logon + restart-on-failure (1 min), unlimited restarts,
     stop-if-already-running ignored (our mutex prevents duplicates anyway),
     run whether or not the user is logged on only when SYSTEM is used —
     default is interactive user so ProgramData paths stay per-user."""
 
+    args = arguments if arguments is not None else "-m apexity_bridge run"
     user_block = (
         f"<UserId>{escape(logon_user)}</UserId><LogonType>InteractiveToken</LogonType>"
         if logon_user else "")
@@ -74,7 +91,7 @@ def task_xml(*, python_exe: str, workdir: str, logon_user: str | None = None) ->
   <Actions Context="Author">
     <Exec>
       <Command>{escape(python_exe)}</Command>
-      <Arguments>-m apexity_bridge run</Arguments>
+      <Arguments>{escape(args)}</Arguments>
       <WorkingDirectory>{escape(workdir)}</WorkingDirectory>
     </Exec>
   </Actions>
@@ -101,9 +118,8 @@ def service_action(action: str, config) -> int:
 
 
 def _install(config) -> int:
-    python_exe = str(Path(sys.executable))
-    workdir = str(Path.cwd())
-    xml = task_xml(python_exe=python_exe, workdir=workdir)
+    python_exe, arguments, workdir = launch_command()
+    xml = task_xml(python_exe=python_exe, workdir=workdir, arguments=arguments)
     xml_path = config.data_dir / "ApexityEduBridge-task.xml"
     xml_path.parent.mkdir(parents=True, exist_ok=True)
     xml_path.write_text(xml, encoding="utf-16")

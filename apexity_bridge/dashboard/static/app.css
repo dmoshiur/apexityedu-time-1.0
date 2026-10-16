@@ -11,8 +11,9 @@
 body { margin: 0; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
 a { color: var(--accent); text-decoration: none; }
 .topbar { display: flex; align-items: center; gap: 24px; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; }
-.brand { font-weight: 700; font-size: 17px; }
-.brand span { color: var(--muted); font-weight: 400; font-size: 13px; }
+.brand { font-weight: 700; font-size: 17px; display: flex; align-items: center; gap: 10px; }
+.brand img { width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; }
+.brand span { color: var(--muted); font-weight: 400; font-size: 13px; display: block; }
 .topbar nav { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
 .topbar nav a { color: var(--muted); padding: 6px 12px; border-radius: 8px; }
 .topbar nav a.active, .topbar nav a:hover { color: var(--text); background: var(--panel2); }
@@ -66,8 +67,12 @@ dialog form label input, dialog form label select { display: block; width: 100%;
 .dialog-actions { display: flex; gap: 10px; margin-top: 16px; }
 .login-page { display: flex; min-height: 100vh; align-items: center; justify-content: center; }
 .login-card { background: var(--panel); border: 1px solid var(--border); padding: 30px 34px; border-radius: 16px; width: 400px; }
-.login-card h1 { margin: 0 0 18px; font-size: 20px; }
+.login-card.setup-card { width: 440px; }
+.login-brand { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+.login-brand img { width: 48px; height: 48px; border-radius: 12px; }
+.login-card h1 { margin: 0; font-size: 20px; }
 .login-card h1 span { display: block; font-size: 13px; color: var(--muted); font-weight: 400; }
+.stack { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .login-card form label { display: block; margin: 12px 0; color: var(--muted); }
 .login-card form label input { display: block; width: 100%; margin-top: 4px; }
 .login-card button { width: 100%; margin-top: 4px; background: var(--accent2); border: none; color: #fff; padding: 10px; }

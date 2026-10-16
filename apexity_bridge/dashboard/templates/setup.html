@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+  <title>First-run setup — ApexityEdu Bridge</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body class="login-page">
+<div class="login-card setup-card">
+  <div class="login-brand">
+    <img src="{{ url_for('static', filename='logo.png') }}" alt="ApexityEdu" width="48" height="48">
+    <h1>Welcome to ApexityEdu <span>Smart Attendance Bridge</span></h1>
+  </div>
+  <p class="muted">This is a one-time setup on this PC. Choose a dashboard password — it is stored as a salted PBKDF2 hash, never in plaintext.</p>
+  {% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+  <form method="post" autocomplete="off">
+    <label>Admin username <input name="username" required maxlength="64" value="admin"></label>
+    <label>Dashboard password <input name="password" type="password" required minlength="8" placeholder="at least 8 characters"></label>
+    <label>Repeat password <input name="password_confirm" type="password" required minlength="8"></label>
+    <label>EMS device token <span class="muted">(optional — you can add it later in Settings)</span>
+      <input name="ems_token" type="password" placeholder="stored in Windows Credential Manager">
+    </label>
+    <button type="submit">Finish setup &amp; continue</button>
+  </form>
+</div>
+</body>
+</html>

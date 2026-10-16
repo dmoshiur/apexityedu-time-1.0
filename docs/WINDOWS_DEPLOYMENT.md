@@ -1,6 +1,31 @@
 # Windows deployment guide (Windows 10/11)
 
-Target layout after install (defaults):
+## Preferred: branded installer (no Python)
+
+Download **`ApexityEduBridge-Setup-1.0.0.exe`** and double-click it. How to
+obtain / build it: [`WINDOWS_PACKAGING.md`](WINDOWS_PACKAGING.md).
+
+Target layout:
+
+```
+C:\Program Files\ApexityEdu\Attendance Bridge\
+    ApexityEduBridge.exe                         ← logo icon; Start Menu + Desktop
+    _internal\                                   ← bundled runtime
+C:\ProgramData\ApexityEduBridge\                 ← data
+    .env                                         ← configuration
+    bridge.db                                    ← SQLite (WAL)
+    logs\bridge.log
+    backups\
+```
+
+The installer registers Add/Remove Programs, Start Menu and Desktop shortcuts
+(with the app logo), a native desktop window, a tray icon, and optional
+sign-in auto-start. First launch opens the **desktop app** (not a browser)
+on a first-run wizard. Closing the window hides it to the tray — the
+background service keeps collecting and will auto-start + reconnect devices
+after a PC reboot. Uninstall from Settings → Apps, or Start Menu → Uninstall.
+
+## Alternative: source install (Python 3.10+)
 
 ```
 E:\Software Run\ZKTeco\apexityedu-bridge\        ← the app (this repository)
@@ -14,14 +39,14 @@ C:\ProgramData\ApexityEduBridge\                 ← data (created)
     backups\                                     ← db backups + diagnostics zips
 ```
 
-## Prerequisites
+### Prerequisites
 - Windows 10/11 64-bit, Python 3.10+ from python.org (tick *Add python.exe to
   PATH*), or the Microsoft Store build.
 - The PC and the K40(s) on the same LAN (or routed VLANs added to
   `DISCOVERY_EXTRA_SUBNETS`).
 - Outbound HTTPS (443) to `apexityedu.com`.
 
-## Install — 5 minutes
+### Install — 5 minutes
 
 ```powershell
 cd "E:\Software Run\ZKTeco"            # put the repository here
@@ -41,7 +66,7 @@ Non-interactive installation:
 .\scripts\Install-ApexityBridge.ps1 -SkipInteractive -EmsBaseUrl "https://apexityedu.com"
 ```
 
-Then open **http://127.0.0.1:8321** and:
+Then open **http://127.0.0.1:8321** (or the first-run wizard) and:
 1. **Devices → Scan LAN now** → register your K40 (or *Manual registration*).
 2. **Students → Refresh from EMS** → map biometric user IDs to students.
 3. **Settings → Test EMS connection** → expect health OK.

@@ -375,7 +375,7 @@ async function loadSettings() {
     const input = form.querySelector(`[name=${CSS.escape(key)}]`);
     if (input && val !== null && val !== undefined) input.value = val;
   }
-  document.getElementById("token-configured").textContent = d.token_configured ? "yes (in credential store)" : "NO — run set-token";
+  document.getElementById("token-configured").textContent = d.token_configured ? "yes (in credential store)" : "NO — save a token below";
 }
 
 async function saveSettings(ev) {
@@ -533,6 +533,31 @@ document.addEventListener("DOMContentLoaded", () => {
   if (page === "settings") {
     document.getElementById("settings-form").addEventListener("submit", saveSettings);
     document.getElementById("btn-ems-test").addEventListener("click", testEms);
+    const tokenForm = document.getElementById("token-form");
+    if (tokenForm) tokenForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const token = e.target.token.value;
+      try {
+        const d = await api("/api/settings/token", { method: "POST", json: { token } });
+        e.target.reset();
+        document.getElementById("token-configured").textContent =
+          d.token_configured ? "yes (in credential store)" : "NO — save a token below";
+        flash(d.token_configured ? "EMS token saved to Credential Manager." : "EMS token cleared.");
+      } catch (err) { flash(err.message, true); }
+    });
+    const pwForm = document.getElementById("password-form");
+    if (pwForm) pwForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      try {
+        await api("/api/settings/password", {
+          method: "POST",
+          json: { current: f.current.value, new: f.new.value, confirm: f.confirm.value },
+        });
+        f.reset();
+        flash("Dashboard password updated.");
+      } catch (err) { flash(err.message, true); }
+    });
     document.getElementById("btn-backup").addEventListener("click", async () => {
       try {
         const d = await api("/api/backup", { method: "POST" });

@@ -58,12 +58,39 @@ def create_app(ctx) -> Flask:
         return jsonify({"ok": False, "error": message}), status
 
     # ------------------------------------------------------------------ auth --
+    @app.route("/setup", methods=["GET", "POST"])
+    def setup():
+        """First-run wizard: set the dashboard password (and optional EMS token)."""
+        if auth.password_is_configured(settings_repo()):
+            return redirect(url_for("login"))
+        error = None
+        if request.method == "POST":
+            from ..security.passwords import hash_password
+            pw1 = request.form.get("password") or ""
+            pw2 = request.form.get("password_confirm") or ""
+            token = (request.form.get("ems_token") or "").strip()
+            if pw1 != pw2:
+                error = "Passwords do not match."
+            else:
+                try:
+                    hashed = hash_password(pw1)
+                except ValueError as exc:
+                    error = str(exc)
+                else:
+                    repos["settings"].set(
+                        "dashboard_admin_password_hash", hashed, is_secret=True)
+                    username = (request.form.get("username") or "admin").strip()[:64] or "admin"
+                    repos["settings"].set("dashboard_admin_username", username)
+                    if token and ctx.secret_store:
+                        ctx.secret_store.set_ems_token(token)
+                    repos["audit"].log(actor=username, action="dashboard.initial_setup")
+                    return redirect(url_for("login"))
+        return render_template("setup.html", error=error)
+
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if not auth.password_is_configured(settings_repo()):
-            return render_template(
-                "login.html", setup_required=True, error=None,
-            )
+            return redirect(url_for("setup"))
         error = None
         if request.method == "POST":
             allowed, wait = auth.login_allowed()
@@ -456,6 +483,48 @@ def create_app(ctx) -> Flask:
                                detail=",".join(changed))
             ctx.apply_settings_overrides()
         return ok(changed=changed)
+
+    @app.route("/api/settings/token", methods=["POST"])
+    @auth.login_required
+    def api_set_token():
+        payload = request.get_json(silent=True) or request.form
+        token = (payload.get("token") or "").strip()
+        if ctx.secret_store is None:
+            return fail("credential store is not available", 503)
+        if not token:
+            ctx.secret_store.delete_ems_token()
+            repos["audit"].log(actor=auth.current_actor(), action="settings.token_cleared")
+            if ctx.sync_worker:
+                ctx.sync_worker.rebuild_client()
+            return ok(token_configured=False)
+        ctx.secret_store.set_ems_token(token)
+        repos["audit"].log(actor=auth.current_actor(), action="settings.token_set",
+                           detail="EMS device token updated")
+        if ctx.sync_worker:
+            ctx.sync_worker.rebuild_client()
+            ctx.sync_worker.wake()
+        return ok(token_configured=True)
+
+    @app.route("/api/settings/password", methods=["POST"])
+    @auth.login_required
+    def api_change_password():
+        from ..security.passwords import hash_password
+        payload = request.get_json(silent=True) or request.form
+        current = payload.get("current") or ""
+        new = payload.get("new") or payload.get("password") or ""
+        confirm = payload.get("confirm") or payload.get("password_confirm") or new
+        actor = auth.current_actor()
+        if not auth.check_credentials(settings_repo(), actor, current):
+            return fail("current password is incorrect", 403)
+        if new != confirm:
+            return fail("new passwords do not match")
+        try:
+            hashed = hash_password(new)
+        except ValueError as exc:
+            return fail(str(exc))
+        repos["settings"].set("dashboard_admin_password_hash", hashed, is_secret=True)
+        repos["audit"].log(actor=actor, action="dashboard.password_changed")
+        return ok()
 
     @app.route("/api/settings/ems-test", methods=["POST"])
     @auth.login_required
