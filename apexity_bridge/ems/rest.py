@@ -21,6 +21,7 @@ from .base import (
     EmsProtocolError,
     EmsUnavailableError,
     HealthResult,
+    PeoplePushOutcome,
     RegisterResult,
     RosterPage,
     StudentInfo,
@@ -29,6 +30,40 @@ from .base import (
 )
 
 log = logging.getLogger("apexity_bridge.ems.rest")
+
+# Fields the EMS understands when the bridge writes a person back. Anything
+# unknown is dropped rather than guessed at.
+PERSON_FIELDS = (
+    "id", "name", "person_type", "admission_no", "roll_no", "class",
+    "section", "employee_no", "designation", "department", "active",
+)
+
+
+def person_payload(person: dict) -> dict:
+    """Normalise one person row into the documented write payload."""
+    out: dict = {}
+    for field in PERSON_FIELDS:
+        if field not in person:
+            continue
+        value = person.get(field)
+        if field == "active":
+            out[field] = bool(value)
+            continue
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            out[field] = text
+    if "id" not in out:
+        # Some rows carry the EMS id under its historical name.
+        fallback = str(person.get("ems_student_id") or "").strip()
+        if fallback:
+            out["id"] = fallback
+    if "name" not in out:
+        out["name"] = ""
+    if "person_type" not in out:
+        out["person_type"] = str(person.get("person_type") or "student")
+    return out
 
 
 class RestEmsClient:
@@ -214,6 +249,56 @@ class RestEmsClient:
             return UserSyncOutcome(fatal=str(exc)[:300])
         return UserSyncOutcome(
             accepted=int(payload.get("accepted", len(users)) or 0),
+            detail=str(payload.get("detail", ""))[:200],
+        )
+
+    def push_people(self, people: list[dict]) -> PeoplePushOutcome:
+        """Write people (students/teachers/staff) back to the EMS.
+
+        This is the write direction of the directory contract (Option E in
+        docs/EMS_API_CONTRACT.md). It is *optional* on the server: an EMS
+        that only implements ``GET /people`` answers 404 here, and the
+        bridge reports exactly that instead of pretending the people were
+        saved.
+
+        The payload is an upsert keyed by ``id``: sending the same person
+        twice must never create a duplicate.
+        """
+        if not people:
+            return PeoplePushOutcome(accepted=0, detail="nothing to push")
+        try:
+            payload = self._request(
+                "POST", "/people",
+                json={"people": [person_payload(p) for p in people]},
+            )
+        except EmsProtocolError as exc:
+            if "404" in str(exc):
+                return PeoplePushOutcome(
+                    accepted=0,
+                    unsupported=True,
+                    detail=(
+                        "this EMS does not implement POST /api/v1/bridge/people "
+                        "(HTTP 404) — the directory can be downloaded but not "
+                        "written. Add the endpoint (docs/EMS_API_CONTRACT.md "
+                        "§ Option E) or create the people in apexityedu.com."
+                    ),
+                )
+            return PeoplePushOutcome(fatal=str(exc)[:300])
+        if payload.get("ok") is False:
+            return PeoplePushOutcome(
+                fatal=str(payload.get("error") or payload.get("detail")
+                          or "the EMS refused the people payload")[:300])
+        accepted = payload.get("accepted")
+        if accepted is None:
+            accepted = len(people)
+        try:
+            accepted = int(accepted)
+        except (TypeError, ValueError):
+            accepted = len(people)
+        return PeoplePushOutcome(
+            accepted=min(accepted, len(people)),
+            created=int(payload.get("created") or 0),
+            updated=int(payload.get("updated") or 0),
             detail=str(payload.get("detail", ""))[:200],
         )
 

@@ -94,6 +94,27 @@ class UserSyncOutcome:
 
 
 @dataclass(frozen=True)
+class PeoplePushOutcome:
+    """Result of publishing people (students/teachers/staff) to the EMS.
+
+    ``unsupported`` is the honest answer for an EMS that has no people-write
+    endpoint: the download direction works, the write direction does not, and
+    the bridge says so instead of pretending the people were saved.
+    """
+
+    accepted: int = 0
+    created: int = 0
+    updated: int = 0
+    detail: str = ""
+    fatal: str | None = None
+    unsupported: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return self.fatal is None
+
+
+@dataclass(frozen=True)
 class HealthResult:
     ok: bool
     server_time: str | None = None
@@ -149,3 +170,4 @@ class EmsClient(Protocol):
     # optional
     def fetch_people(self, cursor: str | None = None) -> RosterPage: ...
     def push_users(self, serial: str, users: list[dict]) -> UserSyncOutcome: ...
+    def push_people(self, people: list[dict]) -> PeoplePushOutcome: ...

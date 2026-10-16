@@ -84,6 +84,25 @@ Task Scheduler policy and a process mutex).
 Crash recovery beyond that is inherent: all state lives in SQLite, so a killed
 process loses nothing; the task restarts it and sync resumes from the queue.
 
+### Scheduled sync (second task)
+
+The always-on task above is the collector. A **second**, optional task
+`ApexityEduBridge-Sync` runs `python -m apexity_bridge sync-now` every 15
+minutes — it pushes the people directory, the device user tables and the
+pending attendance to ApexityEdu. It is the safety net for schools that
+close the app between shifts.
+
+```powershell
+.\.venv\Scripts\python.exe -m apexity_bridge service install-sync     # add it
+.\.venv\Scripts\python.exe -m apexity_bridge service uninstall-sync   # remove it
+.\.venv\Scripts\python.exe -m apexity_bridge service status            # both tasks
+```
+
+Both tasks can also be managed from the desktop app:
+**Settings → Auto-start & scheduled sync**. The full guide (including doing
+it by hand in the Task Scheduler UI) is
+[`PUSH_AND_SCHEDULER.md`](PUSH_AND_SCHEDULER.md).
+
 ## Firewall / network notes
 - Dashboard binds **127.0.0.1 only**. Exposing it on the LAN requires setting
   `DASHBOARD_ALLOW_LAN=1` + `DASHBOARD_HOST=0.0.0.0` + a **Windows firewall rule

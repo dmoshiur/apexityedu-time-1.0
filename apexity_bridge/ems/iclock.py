@@ -39,6 +39,7 @@ from .base import (
     EmsProtocolError,
     EmsUnavailableError,
     HealthResult,
+    PeoplePushOutcome,
     RegisterResult,
     RosterPage,
     StudentInfo,
@@ -384,6 +385,28 @@ class IclockEmsClient:
         accepted = int(match.group(1)) if match else len(users)
         return UserSyncOutcome(accepted=min(accepted, len(users)),
                                detail=f"USER table accepted: {self._safe_detail(text)[:80]!r}")
+
+    # ------------------------------------------------------------ people table --
+    def push_people(self, people: list[dict]) -> PeoplePushOutcome:
+        """Write people back to the EMS.
+
+        iClock/ADMS has **no** people-write endpoint — it only carries
+        device tables and punches. In split mode (iClock for punches, REST
+        for the directory) the write goes through the REST side-channel; in
+        pure iClock mode the capability is honestly reported as missing.
+        """
+        if not people:
+            return PeoplePushOutcome(accepted=0, detail="nothing to push")
+        delegate = getattr(self._roster_client, "push_people", None)
+        if delegate is not None:
+            return delegate(people)
+        raise EmsProtocolError(
+            "the iClock protocol cannot write people to the EMS — it has no "
+            "people endpoint. Set EMS_PROTOCOL=rest (or keep the REST roster "
+            "side-channel enabled with EMS_ROSTER_MODE=auto) so the bridge can "
+            "use POST /api/v1/bridge/people "
+            "(docs/EMS_API_CONTRACT.md § Option E)."
+        )
 
     # ------------------------------------------------------------- diagnostics --
     def probe_attlog_path(self, serial: str) -> dict:

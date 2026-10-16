@@ -151,11 +151,29 @@ legacy `/students` shape: it should return `person_type` per row
 1. **Device Users → Read from device** — the cache must be filled first (the
    bridge mirrors the terminal's user table every `USERS_SYNC_INTERVAL`
    seconds, default 900).
-2. **Device Users → Publish to ApexityEdu** forces an immediate push.
+2. **Device Users → Push users to EMS** performs the push immediately and
+   shows the server's exact answer (`pushed` / `refused` / `auth error` /
+   `no users read yet`). From the shell:
+   `python -m apexity_bridge push-users`.
 3. Server-side, ApexityEdu must accept `POST …/iclock/cdata?SN=…&table=USER`
    (iClock) or `POST /api/v1/bridge/devices/users` (REST) — see
    `docs/EMS_API_CONTRACT.md` § Option D. Without it, punches arrive as bare
    PINs and cannot be attributed to anybody.
+
+### "I created people in the desktop app but ApexityEdu has no users/teachers/students"
+- The **device user table** (PIN + name) and the **people directory**
+  (students/teachers/staff) are two different things:
+  * device users → **Device Users → Push users to EMS** (Option D),
+  * people → **People → Push people to ApexityEdu** or
+    **Add person to ApexityEdu…** (Option E, `POST /api/v1/bridge/people`).
+- If the people push says *"this EMS does not implement
+  POST /api/v1/bridge/people"*, the server side is missing that endpoint —
+  the exact contract is in `docs/EMS_API_CONTRACT.md` § Option E and a
+  working implementation is in `docs/reference/ems_reference_api.py`.
+- With the iClock protocol the bridge cannot write people at all (iClock
+  has no people endpoint); use `EMS_PROTOCOL=rest` or keep
+  `EMS_ROSTER_MODE=auto` so the REST side-channel is available.
+- Full walkthrough: [`PUSH_AND_SCHEDULER.md`](PUSH_AND_SCHEDULER.md).
 
 ---
 
@@ -188,6 +206,19 @@ be re-read from the device itself (logs are never deleted there).
 - Live log: `%ProgramData%\ApexityEduBridge\logs\bridge.log` (rotating, 5×5 MB).
 - Bundle: **Settings → Export diagnostics bundle** → zip with redacted config,
   stats, logs and a DB snapshot.
+
+### The bridge does not start after a reboot
+- Check the scheduled task: `scripts\Service-Control.ps1 status` (or
+  **Settings → Auto-start & scheduled sync → Status** in the desktop app).
+  It must show `ApexityEduBridge: Running`.
+- If it is *not installed*, register it again:
+  `python -m apexity_bridge service install` (or the **Install auto-start**
+  button).
+- The task runs as the signed-in user with least privileges; a "task has not
+  run yet" state usually means the machine was never rebooted after
+  installation — start it once with `service start`.
+- The always-on collector and the optional scheduled sync are two separate
+  tasks; see [`PUSH_AND_SCHEDULER.md`](PUSH_AND_SCHEDULER.md) § 5.
 
 ---
 

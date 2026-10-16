@@ -587,6 +587,20 @@ class StudentsPage(QWidget):
         mapb.clicked.connect(self._map)
         pager.addWidget(mapb)
         root.addLayout(pager)
+
+        push_row = QHBoxLayout()
+        push_people = QPushButton("Push people to ApexityEdu")
+        push_people.setObjectName("primary")
+        push_people.clicked.connect(self._push_people)
+        add_person = QPushButton("Add person to ApexityEdu…")
+        add_person.clicked.connect(self._add_person)
+        self.status = QLabel("")
+        self.status.setObjectName("muted")
+        self.status.setWordWrap(True)
+        push_row.addWidget(push_people)
+        push_row.addWidget(add_person)
+        push_row.addWidget(self.status, 1)
+        root.addLayout(push_row)
         self.unmapped = _table(["Device", "Device user ID", "Events", "Last seen"])
         um = QFrame()
         um.setObjectName("card")
@@ -645,6 +659,107 @@ class StudentsPage(QWidget):
         self._worker.done.connect(lambda s: (_info(self, f"Roster refreshed: {s}"), self.refresh()))
         self._worker.failed.connect(lambda m: _warn(self, m))
         self._worker.start()
+
+    # ------------------------------------------------- manual push to the EMS --
+    def _push_people(self) -> None:
+        """Push the cached directory (students, teachers, staff) to the EMS."""
+        if self._worker and self._worker.isRunning():
+            return
+        only = self.ptype.currentData() or None
+        types = [only] if only else None
+        self.status.setText("pushing the people directory to ApexityEdu…")
+
+        def work():
+            return self.facade.push_people(person_types=types)
+
+        self._worker = Worker(work)
+        self._worker.done.connect(self._push_people_done)
+        self._worker.failed.connect(
+            lambda m: (self.status.setText(""), _warn(self, m)))
+        self._worker.start()
+
+    def _push_people_done(self, result) -> None:
+        self.status.setText("")
+        if result.get("unsupported"):
+            _warn(self, result.get("error") or result.get("detail")
+                  or "this EMS cannot store people")
+            return
+        if not result.get("ok"):
+            _warn(self, result.get("error") or "The people push failed.")
+            return
+        by_type = result.get("by_type") or {}
+        summary = ", ".join(f"{count} {kind}" for kind, count in sorted(by_type.items()))
+        _info(self, f"Pushed {result.get('accepted', 0)} of {result.get('people', 0)} "
+                    f"people to ApexityEdu ({summary}).")
+        self.refresh()
+
+    def _add_person(self) -> None:
+        """Manual button: create a student / teacher / staff member in the EMS."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Add person to ApexityEdu")
+        dlg.setMinimumWidth(420)
+        form = QFormLayout(dlg)
+        pid = QLineEdit()
+        pid.setPlaceholderText("S1001 (student) · T2001 (teacher) · X3001 (staff)")
+        name = QLineEdit()
+        ptype = QComboBox()
+        for label, value in (("Student", "student"), ("Teacher", "teacher"),
+                             ("Staff", "staff"), ("Other", "other")):
+            ptype.addItem(label, value)
+        admission = QLineEdit()
+        roll = QLineEdit()
+        klass = QLineEdit()
+        section = QLineEdit()
+        employee = QLineEdit()
+        designation = QLineEdit()
+        department = QLineEdit()
+        form.addRow("EMS id", pid)
+        form.addRow("Name", name)
+        form.addRow("Type", ptype)
+        form.addRow("Admission № (student)", admission)
+        form.addRow("Roll № (student)", roll)
+        form.addRow("Class (student)", klass)
+        form.addRow("Section (student)", section)
+        form.addRow("Employee № (staff)", employee)
+        form.addRow("Designation (staff)", designation)
+        form.addRow("Department (staff)", department)
+        okb = QPushButton("Create in ApexityEdu")
+        okb.setObjectName("primary")
+        form.addRow(okb)
+
+        def go() -> None:
+            payload = {
+                "id": pid.text().strip(),
+                "name": name.text().strip(),
+                "person_type": ptype.currentData(),
+                "admission_no": admission.text().strip() or None,
+                "roll_no": roll.text().strip() or None,
+                "class_name": klass.text().strip() or None,
+                "section": section.text().strip() or None,
+                "employee_no": employee.text().strip() or None,
+                "designation": designation.text().strip() or None,
+                "department": department.text().strip() or None,
+                "active": True,
+            }
+            try:
+                result = self.facade.create_person(payload)
+            except FacadeError as exc:
+                _warn(dlg, str(exc))
+                return
+            if result.get("unsupported"):
+                _warn(dlg, result.get("error")
+                      or "this EMS cannot store people yet")
+                return
+            if not result.get("ok"):
+                _warn(dlg, result.get("error") or "ApexityEdu refused the person.")
+                return
+            dlg.accept()
+            _info(self, f"{payload['name']} ({payload['person_type']}) is now in "
+                        f"ApexityEdu.")
+            self.refresh()
+
+        okb.clicked.connect(go)
+        dlg.exec()
 
     def _map(self) -> None:
         row = self.table.currentRow()
@@ -818,11 +933,39 @@ class DeviceUsersPage(QWidget):
         self.refresh()
 
     def _push(self) -> None:
-        try:
-            self.facade.push_device_users()
-            _info(self, "Queued. The bridge will publish the user tables to ApexityEdu now.")
-        except FacadeError as exc:
-            _warn(self, str(exc))
+        """Push the user tables to ApexityEdu right now — and show the result.
+
+        The old button only queued the work, so a push that the server
+        refused looked exactly like a push that worked. The server's answer
+        is now shown verbatim.
+        """
+        if self._worker and self._worker.isRunning():
+            return
+        serial = self.device.currentData() or None
+        device_id = None
+        if serial:
+            devices = self.facade.ctx.repos["devices"].list_active()
+            match = [d for d in devices if d.get("serial_number") == serial]
+            device_id = match[0]["id"] if match else None
+        self.status.setText("publishing the user tables to ApexityEdu…")
+
+        def work():
+            return self.facade.push_device_users(device_id)
+
+        self._worker = Worker(work)
+        self._worker.done.connect(self._push_done)
+        self._worker.failed.connect(
+            lambda m: (self.status.setText(""), _warn(self, m)))
+        self._worker.start()
+
+    def _push_done(self, result) -> None:
+        self.status.setText("")
+        text = result.get("text") or ""
+        if result.get("ok"):
+            _info(self, text)
+        else:
+            _warn(self, text or "The push did not succeed.")
+        self.refresh()
 
     def _auto(self) -> None:
         """Bind every PIN whose name (or number) matches exactly one person."""
@@ -1036,6 +1179,7 @@ class SettingsPage(QWidget):
     def __init__(self, facade: DesktopFacade):
         super().__init__()
         self.facade = facade
+        self._worker = None
         self.setObjectName("page")
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 18, 22, 12)
@@ -1105,6 +1249,52 @@ class SettingsPage(QWidget):
         diag.clicked.connect(self._diag)
         form.addRow(bak, diag)
         root.addWidget(card)
+
+        # --- auto-start & scheduled sync ---------------------------------
+        sched = QFrame()
+        sched.setObjectName("card")
+        sform = QVBoxLayout(sched)
+        stitle = QLabel("Auto-start & scheduled sync")
+        stitle.setStyleSheet("font-weight: 700;")
+        sform.addWidget(stitle)
+        shint = QLabel(
+            "Auto-start registers a Windows Task Scheduler task so the bridge "
+            "starts with Windows and restarts itself after a crash. The "
+            "scheduled sync is a second task that pushes attendance, device "
+            "users and the people directory to ApexityEdu every 15 minutes — "
+            "useful when the desktop app is closed between shifts."
+        )
+        shint.setObjectName("muted")
+        shint.setWordWrap(True)
+        sform.addWidget(shint)
+        srow = QHBoxLayout()
+        for text, action in (
+            ("Install auto-start", "install"),
+            ("Start", "start"),
+            ("Stop", "stop"),
+            ("Status", "status"),
+            ("Uninstall auto-start", "uninstall"),
+            ("Add scheduled sync", "install-sync"),
+            ("Remove scheduled sync", "uninstall-sync"),
+        ):
+            b = QPushButton(text)
+            if text == "Install auto-start":
+                b.setObjectName("primary")
+            if action != "status":
+                b.clicked.connect(lambda _=False, a=action: self._scheduler(a))
+            else:
+                b.clicked.connect(lambda _=False: self._scheduler_status())
+            srow.addWidget(b)
+        srow.addStretch()
+        sform.addLayout(srow)
+        sync_now = QPushButton("Sync now (roster + users + attendance)")
+        sync_now.clicked.connect(self._sync_now)
+        sform.addWidget(sync_now)
+        self.sched_status = QLabel("")
+        self.sched_status.setObjectName("muted")
+        self.sched_status.setWordWrap(True)
+        sform.addWidget(self.sched_status)
+        root.addWidget(sched)
         root.addStretch()
 
     def refresh(self) -> None:
@@ -1117,6 +1307,69 @@ class SettingsPage(QWidget):
         self.token_lbl.setText(
             "configured (Credential Manager)" if d["token_configured"]
             else "NOT configured — paste a token below")
+        self._scheduler_status(silent=True)
+
+    # ------------------------------------------------- scheduler & manual sync --
+    def _scheduler_status(self, silent: bool = False) -> None:
+        try:
+            overview = self.facade.scheduler_overview()
+        except Exception as exc:            # pragma: no cover - defensive
+            self.sched_status.setText(f"scheduler: {exc}")
+            return
+        if not overview.get("supported"):
+            self.sched_status.setText(overview.get("message") or "")
+            return
+        lines = []
+        for task in overview.get("tasks") or []:
+            state = task.get("state") or ("installed" if task.get("installed")
+                                          else "NOT installed")
+            lines.append(f"{task.get('name')}: {state}")
+        self.sched_status.setText("  ·  ".join(lines))
+        if not silent:
+            _info(self, "\n".join(lines) or "No scheduled task found.")
+
+    def _scheduler(self, action: str) -> None:
+        try:
+            result = self.facade.scheduler_action(action)
+        except FacadeError as exc:
+            _warn(self, str(exc))
+            return
+        message = result.get("message") or ""
+        if result.get("ok"):
+            _info(self, message)
+        else:
+            _warn(self, message or f"The scheduler action {action!r} failed.")
+        self._scheduler_status(silent=True)
+
+    def _sync_now(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
+        self.sched_status.setText("syncing…")
+
+        def work():
+            return self.facade.sync_now()
+
+        self._worker = Worker(work)
+        self._worker.done.connect(self._sync_now_done)
+        self._worker.failed.connect(
+            lambda m: (self.sched_status.setText(""), _warn(self, m)))
+        self._worker.start()
+
+    def _sync_now_done(self, report) -> None:
+        roster = report.get("roster") or {}
+        users = report.get("users") or {}
+        attendance = report.get("attendance") or {}
+        errors = report.get("errors") or []
+        text = (f"roster: {roster.get('fetched', 0)} people · "
+                f"device users: {users.get('pushed', 0)} terminal(s) · "
+                f"attendance: {attendance.get('pushed', 0)} event(s) pushed")
+        if errors:
+            text += "\n\n" + "\n".join(errors)
+        self.sched_status.setText(text)
+        if errors:
+            _warn(self, text)
+        else:
+            _info(self, text)
 
     def _save(self) -> None:
         try:

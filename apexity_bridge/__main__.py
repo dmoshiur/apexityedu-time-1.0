@@ -9,6 +9,10 @@ Commands
     scan                 connectivity-proof tool: discover/identify terminals
                          and optionally READ attendance (never writes to devices)
     probe-ems            detect which attendance protocol the EMS speaks
+    push-users           publish the terminal user tables (PIN + name) to the EMS now
+    push-people          publish the people directory (students/teachers/staff)
+    sync-now             one-shot sync: roster + device users + attendance
+                         (this is what the scheduled task runs every N minutes)
     verify-ems           prove whether the EMS really ACCEPTS attendance for
                          each device serial (handshake + empty ATTLOG + USER)
     set-token            store the EMS device token in the OS credential store
@@ -86,6 +90,22 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("probe-ems", help="detect the EMS attendance protocol (read-only)")
 
+    push_users_p = sub.add_parser(
+        "push-users", help="publish the terminal user tables (PIN + name) to the EMS now")
+    push_users_p.add_argument("--sn", default="",
+                              help="one serial (default: every registered device)")
+
+    push_people_p = sub.add_parser(
+        "push-people", help="publish the people directory (students/teachers/staff)")
+    push_people_p.add_argument("--type", action="append", default=[], dest="types",
+                               choices=["student", "teacher", "staff", "other"],
+                               help="only this person type (repeatable)")
+    push_people_p.add_argument("--id", dest="ems_student_id", default="",
+                               help="publish one person by EMS id")
+
+    sub.add_parser("sync-now",
+                   help="one-shot sync: roster + device users + attendance")
+
     ver_p = sub.add_parser("verify-ems", help="prove the EMS accepts attendance for each serial")
     ver_p.add_argument("--sn", default="", help="check one serial (default: every registered device)")
     ver_p.add_argument("--no-users", action="store_true",
@@ -100,7 +120,8 @@ def main(argv: list[str] | None = None) -> int:
 
     svc_p = sub.add_parser("service", help="Windows auto-start management")
     svc_p.add_argument("action", choices=["install", "uninstall", "start", "stop",
-                                          "restart", "status"])
+                                          "restart", "status", "install-sync",
+                                          "uninstall-sync"])
 
     args = parser.parse_args(argv)
     command = args.command or _default_command()
@@ -115,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
     handler = {
         "run": _cmd_run, "tray": _cmd_tray, "init-db": _cmd_init_db,
         "scan": _cmd_scan, "probe-ems": _cmd_probe_ems,
+        "push-users": _cmd_push_users, "push-people": _cmd_push_people,
+        "sync-now": _cmd_sync_now,
         "verify-ems": _cmd_verify_ems, "set-token": _cmd_set_token,
         "delete-token": _cmd_delete_token,
         "set-admin-password": _cmd_set_admin_password,
@@ -237,6 +260,123 @@ def _cmd_probe_ems(config, args) -> int:
                        timeout=config.ems_timeout)
     print(report.human())
     return 0 if report.reachable else 1
+
+
+def _open_cli_context(config):
+    """Open the database and build a context with a live EMS client.
+
+    Used by the manual commands (``push-users``/``push-people``/``sync-now``)
+    so they work while the desktop app is closed.
+    """
+    import threading
+
+    from .config import SettingsView
+    from .database.repositories import open_migrated_database
+    from .security.secrets import SecretStore
+    from .service import BridgeContext
+    from .sync.worker import EmsStatus, SyncWorker
+
+    db, repos = open_migrated_database(config.db_path)
+    ctx = BridgeContext(
+        version=__version__, config=config,
+        settings=SettingsView(config, repos["settings"]),
+        repos=repos, secret_store=SecretStore(config.data_dir),
+        ems_status=EmsStatus(), stop_event=threading.Event(),
+    )
+    ctx.sync_worker = SyncWorker(ctx)
+    return ctx, db
+
+
+def _cmd_push_users(config, args) -> int:
+    """Publish the terminal user tables to the EMS right now."""
+    from .ems.push import PushError, format_push_result, push_device_users
+
+    ctx, db = _open_cli_context(config)
+    try:
+        device_id = None
+        if (args.sn or "").strip():
+            device = ctx.repos["devices"].get_by_serial(args.sn.strip())
+            if not device:
+                print(f"no registered device with serial {args.sn!r}")
+                return 1
+            device_id = device["id"]
+        try:
+            result = push_device_users(ctx, device_id=device_id, force=True,
+                                       actor="cli")
+        except PushError as exc:
+            print(str(exc))
+            return 1
+        print(format_push_result(result))
+        return 0 if result.get("ok") else 1
+    finally:
+        db.close_all()
+
+
+def _cmd_push_people(config, args) -> int:
+    """Publish the people directory (students/teachers/staff) to the EMS."""
+    from .ems.push import PushError, push_people
+
+    ctx, db = _open_cli_context(config)
+    try:
+        try:
+            result = push_people(ctx, person_types=list(args.types or []) or None,
+                                 ems_student_id=(args.ems_student_id or "").strip() or None)
+        except PushError as exc:
+            print(str(exc))
+            return 1
+        if result.get("unsupported"):
+            print(f"NOT PUBLISHED — {result.get('error') or result.get('detail')}")
+            return 2
+        if not result.get("ok"):
+            print(f"FAILED — {result.get('error')}")
+            return 1
+        by_type = result.get("by_type") or {}
+        summary = ", ".join(f"{count} {kind}" for kind, count in sorted(by_type.items()))
+        print(f"published {result.get('accepted', 0)} of {result.get('people', 0)} "
+              f"people to the EMS ({summary})")
+        return 0
+    finally:
+        db.close_all()
+
+
+def _cmd_sync_now(config, args) -> int:
+    """One-shot sync — the command the scheduled task runs every N minutes."""
+    from .ems.base import EmsError
+    from .ems.push import PushError, format_push_result, push_device_users
+    from .students.directory import refresh_people
+
+    ctx, db = _open_cli_context(config)
+    failures = 0
+    try:
+        # 1. people directory (download)
+        try:
+            stats = refresh_people(ctx.ems_client, ctx.repos)
+            print(f"roster    : {stats.get('fetched', 0)} people "
+                  f"({stats.get('inserted', 0)} new, {stats.get('updated', 0)} updated)")
+        except (EmsError, PushError) as exc:
+            failures += 1
+            print(f"roster    : FAILED — {exc}")
+        # 2. device user tables (upload)
+        try:
+            result = push_device_users(ctx, force=True, actor="cli")
+            print(format_push_result(result))
+            if not result.get("ok"):
+                failures += 1
+        except PushError as exc:
+            failures += 1
+            print(f"users     : FAILED — {exc}")
+        # 3. attendance (upload)
+        try:
+            pushed = ctx.sync_worker.push_due_events()
+            counts = ctx.repos["events"].counts()
+            print(f"attendance: {pushed} event(s) pushed · "
+                  f"{counts.get('pending', 0)} pending, {counts.get('synced', 0)} synced")
+        except Exception as exc:            # noqa: BLE001 - reported, not raised
+            failures += 1
+            print(f"attendance: FAILED — {exc}")
+        return 0 if failures == 0 else 1
+    finally:
+        db.close_all()
 
 
 def _cmd_verify_ems(config, args) -> int:

@@ -12,7 +12,10 @@
   <select id="filter-section"><option value="">Section: all</option></select>
   <select id="filter-active"><option value="all">Active+inactive</option><option value="1">Active</option><option value="0">Inactive</option></select>
   <button id="btn-refresh-roster">⟳ Refresh from EMS</button>
+  <button id="btn-push-people" class="primary">⬆ Publish people to ApexityEdu</button>
+  <button id="btn-add-person">＋ Add person to ApexityEdu…</button>
   <span id="roster-status" class="muted"></span>
+  <span id="push-people-status" class="muted"></span>
 </div>
 <div id="roster-error" class="notice error hidden"></div>
 <div class="card">
@@ -58,6 +61,32 @@
     <div class="dialog-actions">
       <button type="submit" class="primary">Save mapping</button>
       <button type="button" id="map-cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="add-person-dialog">
+  <form id="add-person-form">
+    <h3>Add a person to ApexityEdu</h3>
+    <label>EMS id <input name="id" required placeholder="S1001 · T2001 · X3001"></label>
+    <label>Name <input name="name" required></label>
+    <label>Type
+      <select name="person_type">
+        <option value="student">Student</option>
+        <option value="teacher">Teacher</option>
+        <option value="staff">Staff</option>
+        <option value="other">Other</option>
+      </select>
+    </label>
+    <label>Admission № (student) <input name="admission_no"></label>
+    <label>Roll № (student) <input name="roll_no"></label>
+    <label>Class (student) <input name="class_name"></label>
+    <label>Section (student) <input name="section"></label>
+    <label>Employee № (staff) <input name="employee_no"></label>
+    <label>Designation (staff) <input name="designation"></label>
+    <label>Department (staff) <input name="department"></label>
+    <div class="dialog-actions">
+      <button type="submit" class="primary">Create in ApexityEdu</button>
+      <button type="button" id="add-person-cancel">Cancel</button>
     </div>
   </form>
 </dialog>

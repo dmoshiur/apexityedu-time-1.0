@@ -171,6 +171,8 @@ class FakeRestServer:
         ]
         self.device_user_uploads: list[dict] = []
         self.people_enabled = True       # False → emulate an EMS without /people
+        self.people_uploads: list[dict] = []   # POST /people bodies
+        self.people_write_enabled = True      # False → EMS without a people write
         self.seen: dict[str, int] = {}     # idempotency_key → remote_id
         self.registered_devices: list[dict] = []
         self.push_calls = 0
@@ -254,6 +256,24 @@ class FakeRestServer:
                     return self._out(200, {"ok": True,
                                            "accepted": len(body.get("users", [])),
                                            "detail": "stored"})
+                if parsed.path == "/api/v1/bridge/people":
+                    if not server.people_write_enabled:
+                        return self._reply(404, json.dumps({"error": "nope"}),
+                                           "application/json")
+                    if not self._auth_ok() and server.mode != "unauthorized":
+                        return self._reply(401, json.dumps({"error": "auth"}), "application/json")
+                    body = self._json_body()
+                    people = body.get("people") or []
+                    server.people_uploads.append(body)
+                    known = {p["id"] for p in server.people}
+                    created = sum(1 for p in people if p.get("id") not in known)
+                    return self._out(200, {
+                        "ok": True,
+                        "accepted": len(people),
+                        "created": created,
+                        "updated": len(people) - created,
+                        "detail": "stored",
+                    })
                 if parsed.path == "/api/v1/bridge/attendance/batch":
                     if not self._auth_ok() and server.mode != "unauthorized":
                         return self._reply(401, json.dumps({"error": "auth"}), "application/json")
