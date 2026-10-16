@@ -58,3 +58,15 @@ Download them from the workflow run page.
 Source art lives in `branding/`. `packaging/make_icons.py` produces the
 multi-size `.ico`, Inno Setup BMPs, favicon and dashboard logo. Re-run it
 after changing the PNGs.
+
+
+## Publishing a downloadable release
+Merging a version-bumped change to `main` automatically builds the Windows
+installer and publishes the installer plus `update.json` to a GitHub Release.
+The release job verifies the installer's SHA-256 and byte size against the
+manifest before publishing, and pins the release tag to the built commit.
+This runs entirely on GitHub-hosted runners; no local artifact download or
+workflow-dispatch permission is required. Bump `apexity_bridge.__version__`
+and run `python -m scripts.release_metadata` for every new published build.
+Existing releases are not overwritten. Tag-triggered publication remains
+supported as well.

@@ -87,7 +87,7 @@ jobs:
 
   release:
     name: Publish update channel
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
     needs: windows
     runs-on: ubuntu-latest
     permissions:
@@ -106,4 +106,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "${{ github.ref_name }}" release/* --verify-tag --generate-notes --latest
+        run: |
+          version=$(jq -er '.version' release/update.json)
+          tag="v$version"
+          if [[ "${{ github.ref }}" == refs/tags/* && "${{ github.ref_name }}" != "$tag" ]]; then
+            echo "Release tag does not match the built update manifest" >&2
+            exit 1
+          fi
+          # The manifest contains the exact installer size and checksum.
+          # Check it before making the pair available to the update client.
+          python - <<'PYVERIFY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path("release")
+          manifest = json.loads((root / "update.json").read_text())
+          installer = root / f"ApexityEduBridge-Setup-{manifest['version']}.exe"
+          assert installer.stat().st_size == manifest["size"], "Installer size mismatch"
+          with installer.open("rb") as source:
+              assert hashlib.file_digest(source, "sha256").hexdigest() == manifest["sha256"], "Installer checksum mismatch"
+          PYVERIFY
+          gh release create "$tag" release/* --target "${{ github.sha }}" \
+            --title "ApexityEdu Bridge $tag" --generate-notes --latest
