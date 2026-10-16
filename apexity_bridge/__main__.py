@@ -96,6 +96,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     command = args.command or _default_command()
+    # Ensure 'hidden' attribute exists for tray command (may default on Windows)
+    if not hasattr(args, "hidden"):
+        args.hidden = False
     if command not in ("run", "tray"):
         _attach_console()
     config = load_config()
