@@ -46,6 +46,17 @@ def test_iclock_health_and_handshake(iclock_server):
     assert client.handshake("SN-A")
 
 
+def test_iclock_registration_accepts_standard_get_option_handshake(iclock_server):
+    client = IclockEmsClient(iclock_server.url, path="/iclock")
+    result = client.register_device(
+        serial="SN-A", model="K40", firmware="6.60", label="Main gate"
+    )
+
+    assert result.ok
+    assert result.remote_device_id == "SN-A"
+    assert "handshake OK" in result.detail
+
+
 def test_iclock_push_uses_zk_wire_format(iclock_server):
     client = IclockEmsClient(iclock_server.url, path="/iclock")
     outcome = client.push_attendance(_events(3))

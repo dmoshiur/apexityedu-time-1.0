@@ -49,7 +49,12 @@ class FakeIclockServer:
                     server.handshakes.append(sn)
                     if server.mode == "http500":
                         return self._reply(500, "boom")
-                    return self._reply(200, "GET OPTION from: APEXITY-FAKE\nOK")
+                    # Real iClock handshake responses are a GET OPTION block;
+                    # they do not also include an "OK" token.
+                    return self._reply(
+                        200,
+                        "GET OPTION FROM: APEXITY-FAKE\nStamp=9999\nOpStamp=0\nPhotoStamp=0",
+                    )
                 if parsed.path.endswith("/getrequest"):
                     return self._reply(200, "OK")
                 return self._reply(404, "nope")

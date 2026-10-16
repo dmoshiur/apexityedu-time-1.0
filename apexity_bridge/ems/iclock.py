@@ -48,6 +48,23 @@ log = logging.getLogger("apexity_bridge.ems.iclock")
 PUSH_VER = "2.4.2"
 
 
+def is_success_handshake(body: str | None) -> bool:
+    """Return whether an iClock ``cdata`` GET reply is a valid handshake.
+
+    The standard ZKTeco response is a ``GET OPTION FROM: <serial>`` block,
+    not ``OK``. Some compatible servers return a plain ``OK`` instead. Keep
+    this check shared by health, registration, and the diagnostic probe so a
+    valid handshake is not reported as successful by one path and rejected
+    by another.
+    """
+    text = (body or "").lstrip("\ufeff").strip().upper()
+    return (
+        text.startswith("GET OPTION")
+        or text == "OK"
+        or text.startswith("OK:")
+    )
+
+
 class IclockEmsClient:
     protocol_name = "iclock"
     ATTLOG_FIELDS = 7  # PIN,time,status,verify,workcode,r1,r2
@@ -105,7 +122,7 @@ class IclockEmsClient:
         except (EmsUnavailableError, EmsAuthError):
             raise
         text = self._expect_ok_text(resp)
-        ok = "OK" in text.upper() or "GET OPTION" in text.upper()
+        ok = is_success_handshake(text)
         return HealthResult(ok=ok, protocol=self.protocol_name,
                             detail=f"handshake response: {text[:120]!r}")
 
@@ -130,7 +147,7 @@ class IclockEmsClient:
             return RegisterResult(ok=False, detail=str(exc))
         except EmsUnavailableError:
             raise
-        ok = "OK" in text.upper()
+        ok = is_success_handshake(text)
         return RegisterResult(
             ok=ok,
             remote_device_id=serial if ok else None,

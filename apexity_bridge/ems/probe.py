@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from .iclock import is_success_handshake
+
 log = logging.getLogger("apexity_bridge.ems.probe")
 
 
@@ -92,8 +94,7 @@ def probe_ems(base_url: str, *, iclock_path: str = "/iclock", timeout: int = 15,
     try:
         resp = http.get(iclock_url, timeout=timeout)
         text = (resp.text or "").strip()
-        upper = text.upper()
-        if resp.status_code == 200 and ("GET OPTION" in upper or upper == "OK" or upper.startswith("OK")):
+        if resp.status_code == 200 and is_success_handshake(text):
             report.iclock_verdict = "yes"
             report.iclock_evidence = (
                 f"GET cdata answered with valid ZKTeco handshake "
