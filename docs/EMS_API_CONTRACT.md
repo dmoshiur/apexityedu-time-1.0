@@ -1,10 +1,26 @@
 # ApexityEdu EMS — Attendance Ingestion Contract (required server-side)
 
-> **Status: open item for the EMS team.** The bridge was developed without
-> access to the EMS source code or database. Everything below is the exact,
-> minimal contract the bridge needs. Until one of the two protocols is live,
-> the bridge keeps collecting and queueing attendance locally and the
-> dashboard shows the precise blocker — nothing is faked.
+> **Status: three requirements left, all small.**
+> Everything the bridge needs is listed below. **ApexityEdu already speaks
+> ZKTeco iClock/ADMS** — see the verified findings under
+> [Option A](#option-a--zkteco-iclock--adms-push-endpoint-already-present-on-apexityeducom)
+> — so the remaining work is: accept `POST` ATTLOG for a registered serial,
+> accept the `USER` table, and (optionally) expose the people directory.
+> The bridge keeps collecting and queueing locally until then and says exactly
+> what is missing — nothing is faked.
+
+> ### Verified against the live server (2026-10-16, read-only probes)
+>
+> | Check | Request | Result |
+> |---|---|---|
+> | iClock handshake | `GET https://apexityedu.com/iclock/cdata?SN=APEXITY-PROBE&options=all` | `HTTP 200` + `GET OPTION FROM: APEXITY-PROBE` block (`Stamp`, `OpStamp`, `TransFlag`, `Realtime=1`, …) |
+> | Presence poll | `GET https://apexityedu.com/iclock/getrequest?SN=APEXITY-PROBE` | `HTTP 200` + `OK` |
+> | ATTLOG upload | `POST …/iclock/cdata?SN=…&table=ATTLOG` | **not yet verified** — run `python -m apexity_bridge verify-ems` on the school PC |
+>
+> The handshake answered for a serial that certainly is **not** registered in
+> ApexityEdu. That is normal iClock behaviour (terminals fetch their config
+> before they are known), and it is exactly why **a green "EMS online" badge
+> proves nothing about attendance**. Use `verify-ems` for proof.
 
 Run this on the school PC to check what the EMS currently speaks:
 
@@ -36,6 +52,23 @@ the device's own serial number as its identity).
 `4`=overtime-start, `5`=overtime-end — treat as informational; apply the
 school's rules server-side). The `PIN` is the biometric user ID **on the
 device**, not the EMS student id.
+
+### The three things ApexityEdu must do for Option A to work end-to-end
+
+1. **Accept `POST` on the `cdata` route for `table=ATTLOG`** and answer
+   `OK: <accepted count>` with HTTP 200. Today a `GET` with `table=ATTLOG`
+   returns the handshake block (verified), so the handler is currently
+   `GET`-only for data. A redirect to a login page, HTML, JSON or an empty
+   body is treated as *not accepted* and the bridge retries.
+2. **Use the serial the bridge pushes.** The SN in the query string must be
+   the one listed under *Biometric Devices*, otherwise there is nothing to
+   attach the punch to. When the two differ, the school sets the device's
+   **EMS serial** on the bridge's Devices page (or via
+   `POST /api/devices/<id>/ems-serial`) — the bridge then pushes under that
+   serial while still identifying the terminal by its hardware serial.
+3. **Accept `table=USER`** (see [Option D](#option-d--publishing-the-terminals-user-table-how-a-pin-becomes-a-person))
+   so a `PIN` can be resolved to a person. Without it every punch arrives
+   anonymous and ApexityEdu has no way to attribute it.
 
 ### Acceptance and presence checks
 - Only **HTTP 200** with a complete `OK` or `OK: <count>` reply acknowledges
@@ -152,6 +185,116 @@ Errors: `401/403` token invalid/expired; `429/5xx` retryable — the bridge
 backs off exponentially (30s → 30min cap) and never loses queued data.
 
 ---
+
+## Option C — the people directory (students **and** teachers **and** staff)
+
+A terminal does not care who punches: teachers, guards and office staff use
+the same K40. A directory that only lists students makes those punches
+unattributable forever.
+
+`GET {EMS_BASE}/api/v1/bridge/people?cursor=&limit=500&types=student,teacher,staff`
+
+```json
+{
+  "people": [
+    {"id": "S1001", "name": "Afnan Rahman", "person_type": "student",
+     "admission_no": "ADM-001", "roll_no": "12", "class": "Six", "section": "A",
+     "active": true},
+    {"id": "T2001", "name": "Sir Alam", "person_type": "teacher",
+     "employee_no": "EMP-01", "designation": "Headmaster", "active": true},
+    {"id": "X3001", "name": "Bacchu Mia", "person_type": "staff",
+     "employee_no": "EMP-77", "designation": "Guard", "active": true}
+  ],
+  "next_cursor": "opaque-or-null"
+}
+```
+
+* `person_type`: `student` (default) | `teacher` | `staff` | `other`.
+  Aliases are accepted: `employee`/`faculty` → `teacher`,
+  `worker`/`non-teaching` → `staff`.
+* `class`/`section` are meaningful for students; `designation`/`department`
+  for teachers and staff. Send whichever apply — the bridge stores all of them.
+* **Backwards compatible:** if `/people` returns 404 the bridge silently falls
+  back to the legacy `GET /students` and caches everyone as `student`.
+* The bridge **never creates people** — this endpoint is read-only from the
+  bridge's side.
+
+Optional mirror of the same idea over iClock is not possible; that is why the
+roster side-channel exists (see **Split mode** below).
+
+### Split mode (recommended starting point for ApexityEdu)
+
+Attendance and the directory do not have to travel over the same protocol:
+
+* punches → **iClock ATTLOG** (already present, no new endpoint needed)
+* people  → **REST `/people`** (one new read-only endpoint)
+
+Set `EMS_PROTOCOL=iclock` and `EMS_ROSTER_MODE=auto` and the bridge does
+exactly that. `EMS_ROSTER_MODE=off` disables the directory download entirely.
+
+## Option D — publishing the terminal's user table (how a PIN becomes a person)
+
+An ATTLOG line carries only a `PIN`. Unless ApexityEdu knows "PIN 7 = Anika",
+it cannot attribute anything. Two supported ways to teach it that:
+
+**iClock (preferred — no new endpoint shape, reuse `cdata`):**
+
+```
+POST {EMS_BASE}/iclock/cdata?SN=<serial>&table=USER&Stamp=<unix>
+Content-Type: text/plain
+
+USER PIN=7\tName=Anika Hossain\tPri=0\tPasswd=\tCard=\tGrp=1\tTZ=0000000000000000
+USER PIN=12\tName=Sir Alam\tPri=0\tPasswd=\tCard=\tGrp=1\tTZ=0000000000000000
+```
+
+Reply `OK` or `OK: <count>` (HTTP 200). The bridge sends this automatically
+(``EMS_PUSH_USERS=1``) whenever a terminal's user table changes, and also
+immediately when the server asks for it via `DATA QUERY USERINFO`.
+**No fingerprints and no passwords are ever transmitted** (``Passwd=`` is
+always empty) — the bridge never calls ``get_templates``.
+
+**REST:**
+
+```
+POST {EMS_BASE}/api/v1/bridge/devices/users
+Authorization: Bearer <device-token>
+{"serial": "K40-1", "users": [{"user_id": "7", "name": "Anika Hossain",
+                              "privilege": 0, "card": null}]}
+→ 200 {"ok": true, "accepted": 1}
+```
+
+Once ApexityEdu has the user table it can offer a *"map device user → person"*
+screen, exactly like the bridge's own **Device Users** page.
+
+## Commands the bridge will answer (and the ones it never will)
+
+The bridge polls `getrequest` every health interval. It answers **read-only**
+ADMS commands by uploading the corresponding table, and refuses everything
+else (``EMS_EXECUTE_COMMANDS=0`` disables even these):
+
+| Command | Bridge response |
+|---|---|
+| `C:n:DATA QUERY USERINFO` | uploads `table=USER` (see Option D) |
+| `C:n:DATA QUERY ATTLOG` | re-uploads up to 1000 stored punches (idempotent server-side) |
+| `C:n:DATA QUERY OPERLOG` | no payload (the bridge keeps no operation log) |
+| `C:n:DATA QUERY BIODATA` / `FINGERTMP` | ignored — biometric templates are never handled |
+| `CHECK`, `INFO`, `OPTIONS` | no payload (answered by the next handshake) |
+| `CLEAR …`, `DELETE …`, `REBOOT`, `SET …`, `ENROLL …`, `INIT …` | **refused**, logged and written to the audit log |
+
+## Which medium should ApexityEdu use? (the short answer)
+
+| Goal | Use |
+|---|---|
+| Get punches flowing with the least server work | **Option A** — accept `POST …/iclock/cdata?…&table=ATTLOG` for the registered serials and reply `OK: <n>`. Nothing else is required for data to move. |
+| Let a school see/choose who punched | **Option D** — accept `table=USER`, or implement `/api/v1/bridge/devices/users`. |
+| Push students **and teachers and staff** into the bridge | **Option C** — `GET /api/v1/bridge/people`. |
+| Full two-way integration later | **Option B** — the REST contract (health, register, people, attendance/batch, devices/users). |
+
+There is deliberately **no "server pulls from the school LAN" option**: the
+school PC sits behind NAT with no inbound route, so the bridge must be the one
+initiating every request. A relay (the bridge pushing to ApexityEdu, or
+`docs/reference/ems_reference_api.py` running somewhere reachable) is the only
+architecture that works without opening the school network to the internet.
 
 ## Reference implementation
 

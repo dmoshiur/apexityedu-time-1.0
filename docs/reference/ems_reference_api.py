@@ -3,10 +3,13 @@
 CONTENTS
     GET  /api/v1/bridge/health
     POST /api/v1/bridge/devices/register
-    GET  /api/v1/bridge/students?cursor=&limit=
+    GET  /api/v1/bridge/people?cursor=&limit=&types=   (students + teachers + staff)
+    GET  /api/v1/bridge/students?cursor=&limit=        (legacy fallback)
+    POST /api/v1/bridge/devices/users                  (terminal user table)
     POST /api/v1/bridge/attendance/batch
     GET  /iclock/cdata           (Option A handshake stub)
-    POST /iclock/cdata           (Option A ATTLOG upload)
+    POST /iclock/cdata           (Option A ATTLOG + USER upload)
+    GET  /iclock/getrequest      (presence / commands)
 
 This file is intentionally self-contained so the EMS team can read the exact
 semantics in code, and so the school can run it temporarily as a relay:
@@ -53,8 +56,15 @@ CREATE TABLE IF NOT EXISTS bridge_devices (
     registered_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS students (
-    id TEXT PRIMARY KEY, name TEXT NOT NULL, admission_no TEXT, roll_no TEXT,
-    class TEXT, section TEXT, active INTEGER NOT NULL DEFAULT 1
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, person_type TEXT NOT NULL DEFAULT 'student',
+    admission_no TEXT, roll_no TEXT, employee_no TEXT, designation TEXT,
+    department TEXT, class TEXT, section TEXT, active INTEGER NOT NULL DEFAULT 1
+);
+-- the terminal's user table, published by the bridge so a PIN can be resolved
+CREATE TABLE IF NOT EXISTS device_users (
+    serial TEXT NOT NULL, user_id TEXT NOT NULL, name TEXT,
+    privilege INTEGER, card TEXT, updated_at TEXT NOT NULL,
+    PRIMARY KEY (serial, user_id)
 );
 CREATE TABLE IF NOT EXISTS attendance (
     remote_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,6 +144,50 @@ def students():
     )
 
 
+@app.get("/api/v1/bridge/people")
+@require_token
+def people():
+    """The whole directory: students AND teachers AND staff."""
+    limit = min(1000, int(request.args.get("limit", 500)))
+    cursor = int(request.args.get("cursor") or 0)
+    types = [t.strip() for t in (request.args.get("types") or "").split(",") if t.strip()]
+    sql = "SELECT * FROM students"
+    args: list = []
+    if types:
+        sql += " WHERE person_type IN (%s)" % ",".join("?" * len(types))
+        args += types
+    sql += " ORDER BY rowid LIMIT ? OFFSET ?"
+    args += [limit, cursor]
+    rows = get_db().execute(sql, args).fetchall()
+    nxt = cursor + len(rows)
+    has_more = get_db().execute("SELECT COUNT(*) c FROM students").fetchone()["c"] > nxt
+    return jsonify(people=[dict(r) for r in rows],
+                   next_cursor=str(nxt) if has_more and rows else None)
+
+
+@app.post("/api/v1/bridge/devices/users")
+@require_token
+def device_users():
+    """Mirror a terminal's enrolled users so a PIN can be bound to a person."""
+    body = request.get_json(silent=True) or {}
+    serial = str(body.get("serial", "")).strip()
+    users = body.get("users")
+    if not serial or not isinstance(users, list):
+        return jsonify({"error": "serial and users[] required"}), 400
+    db = get_db()
+    for u in users:
+        db.execute(
+            "INSERT INTO device_users (serial, user_id, name, privilege, card, updated_at)"
+            " VALUES (?,?,?,?,?,?)"
+            " ON CONFLICT(serial, user_id) DO UPDATE SET name=excluded.name,"
+            " privilege=excluded.privilege, card=excluded.card, updated_at=excluded.updated_at",
+            (serial, str(u.get("user_id")), u.get("name"), u.get("privilege"),
+             u.get("card"), now()),
+        )
+    db.commit()
+    return jsonify(ok=True, accepted=len(users))
+
+
 @app.post("/api/v1/bridge/attendance/batch")
 @require_token
 def attendance_batch():
@@ -192,7 +246,35 @@ def iclock_cdata():
     sn = request.args.get("SN", "").strip()
     if request.method == "GET":
         return "GET OPTION from: EMS-REFERENCE\nStamp=0\nDelay=30\nTransTimes=00:00;14:05\n"
-    if request.args.get("table") != "ATTLOG":
+    table = (request.args.get("table") or "ATTLOG").upper()
+
+    if table == "USER":
+        # PIN → name. This is what lets the EMS turn "PIN 7 punched" into
+        # "Anika Hossain punched". No templates, no passwords.
+        db = get_db()
+        stored = 0
+        for line in request.get_data(as_text=True).splitlines():
+            fields = dict(
+                part.split("=", 1)
+                for part in line.replace("USER ", "").split("\t") if "=" in part
+            )
+            pin = fields.get("PIN", "").strip()
+            if not pin:
+                continue
+            db.execute(
+                "INSERT INTO device_users (serial, user_id, name, privilege, card,"
+                " updated_at) VALUES (?,?,?,?,?,?)"
+                " ON CONFLICT(serial, user_id) DO UPDATE SET name=excluded.name,"
+                " privilege=excluded.privilege, card=excluded.card,"
+                " updated_at=excluded.updated_at",
+                (sn, pin, fields.get("Name"), int(fields.get("Pri") or 0),
+                 fields.get("Card"), now()),
+            )
+            stored += 1
+        db.commit()
+        return f"OK: {stored}"
+
+    if table != "ATTLOG":
         return "OK"
     body = request.get_data(as_text=True)
     accepted = 0

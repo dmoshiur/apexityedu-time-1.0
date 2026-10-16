@@ -79,8 +79,9 @@ def test_bridge_end_to_end_offline_recovery(tmp_path, monkeypatch):
         assert ctx.ems_status.online
         assert ctx.repos["settings"].get("ems_registered:SN-E2E") == "1"
 
-        # roster also flowed in through the queue
-        assert _wait_for(lambda: ctx.repos["students"].count() == 3, timeout=15)
+        # the people directory also flowed in through the queue
+        # (3 students + 2 teachers + 1 staff member)
+        assert _wait_for(lambda: ctx.repos["students"].count() == 6, timeout=15)
 
         # a fourth punch afterwards syncs on the normal cadence
         fake.add_punch("9", datetime(2026, 10, 15, 12, 6, 0))
@@ -96,5 +97,5 @@ def test_bridge_end_to_end_offline_recovery(tmp_path, monkeypatch):
     db, repos = open_migrated_database(config.db_path)
     counts = repos["events"].counts()
     assert counts["synced"] == 4
-    assert repos["students"].count() == 3
+    assert repos["students"].count() == 6
     db.close_all()

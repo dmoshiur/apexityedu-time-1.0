@@ -1,9 +1,13 @@
 {% extends "base.html" %}
 {% block page %}students{% endblock %}
-{% block title %}Students — ApexityEdu Bridge{% endblock %}
+{% block title %}People — ApexityEdu Bridge{% endblock %}
 {% block content %}
 <div class="toolbar">
-  <input id="student-search" type="search" placeholder="Search name / ID / roll…">
+  <input id="student-search" type="search" placeholder="Search name / ID / roll / staff no…">
+  <select id="filter-type">
+    <option value="">Everyone</option><option value="student">Students</option>
+    <option value="teacher">Teachers</option><option value="staff">Staff</option>
+  </select>
   <select id="filter-class"><option value="">Class: all</option></select>
   <select id="filter-section"><option value="">Section: all</option></select>
   <select id="filter-active"><option value="all">Active+inactive</option><option value="1">Active</option><option value="0">Inactive</option></select>
@@ -14,9 +18,10 @@
 <div class="card">
   <table id="students-table">
     <thead><tr>
-      <th data-sort="name">Name</th><th>EMS ID</th><th>Admission №</th><th>Roll</th>
-      <th data-sort="class_name">Class</th><th>Section</th><th>Status</th>
-      <th>Biometric user</th><th>Mapping</th>
+      <th data-sort="name">Name</th><th>EMS ID</th><th>Type</th>
+      <th>Admission № / Staff №</th><th>Roll</th>
+      <th data-sort="class_name">Class</th><th>Section</th><th>Designation</th>
+      <th>Status</th><th>Biometric user</th><th>Mapping</th>
     </tr></thead>
     <tbody></tbody>
   </table>
@@ -24,7 +29,7 @@
 </div>
 <div class="grid two">
   <div class="card">
-    <h3>Unmapped device users <span class="muted">(seen punching, no student linked)</span></h3>
+    <h3>Unmapped device users <span class="muted">(seen punching, nobody linked)</span></h3>
     <table id="unmapped-table"><thead><tr><th>Device</th><th>Device user ID</th><th>Events</th><th>Last seen</th><th>Map to student</th></tr></thead><tbody></tbody></table>
   </div>
   <div class="card">
@@ -43,10 +48,10 @@
 </div>
 <dialog id="map-dialog">
   <form id="map-form">
-    <h3>Map biometric user to student</h3>
+    <h3>Map device user to person</h3>
     <input type="hidden" name="device_serial">
     <label>Device user ID <input name="device_user_id" required></label>
-    <label>Student (EMS ID or search)
+    <label>Person (EMS ID or search)
       <input name="ems_student_id" list="students-datalist" required placeholder="type to search by name…">
     </label>
     <datalist id="students-datalist"></datalist>

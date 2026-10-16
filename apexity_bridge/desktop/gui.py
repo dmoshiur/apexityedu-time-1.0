@@ -28,7 +28,8 @@ log = logging.getLogger("apexity_bridge.desktop")
 NAV = [
     ("overview", "Overview"),
     ("devices", "Devices"),
-    ("students", "Students"),
+    ("device_users", "Device Users"),
+    ("students", "People"),
     ("attendance", "Attendance"),
     ("logs", "Logs"),
     ("settings", "Settings"),
@@ -264,7 +265,8 @@ class OverviewPage(QWidget):
             "uptime": StatCard("Bridge uptime", "Since last restart"),
             "ems": StatCard("EMS", "Connection"),
             "devices": StatCard("Devices", "Online"),
-            "students": StatCard("Students", "Total registered"),
+            "students": StatCard("People", "Students / teachers / staff"),
+            "users": StatCard("Device users", "Unmapped PINs"),
             "pending": StatCard("Pending events", "Awaiting sync"),
             "synced": StatCard("Synced total", "Accepted by EMS"),
             "failed": StatCard("Failed / review", "Needs attention"),
@@ -298,6 +300,24 @@ class OverviewPage(QWidget):
         self.cards["devices"].set_value(
             f"{d['devices'].get('online_now', 0)} / {d['devices'].get('registered', 0)}")
         self.cards["students"].set_value(str(d["students"]["total"]))
+        by_type = d["students"].get("by_type") or {}
+        others = (by_type.get("teacher", 0) + by_type.get("staff", 0)
+                  + by_type.get("other", 0))
+        self.cards["students"].set_hint(
+            f"{by_type.get('student', 0)} students · {others} staff/teachers")
+        users = d.get("device_users") or {}
+        self.cards["users"].set_value(str(users.get("total", 0)))
+        self.cards["users"].set_hint(
+            f"{users.get('unmapped', 0)} not mapped to a person"
+            if users.get("unmapped") else "all mapped")
+
+        verified = ems.get("ingestion_verified")
+        if online and not verified:
+            self.pill.setText("EMS CONNECTED — NO DATA ACCEPTED YET")
+            self.pill.setObjectName("pillWarn")
+            self.pill.style().unpolish(self.pill)
+            self.pill.style().polish(self.pill)
+            self.cards["ems"].set_hint("handshake ok, but no attendance accepted yet")
         pending = d["events"].get("pending", 0) + d["events"].get("failed", 0)
         self.cards["pending"].set_value(str(pending), "warn" if pending else "")
         self.cards["synced"].set_value(f"{d['events'].get('synced', 0):,}")
@@ -338,9 +358,10 @@ class DevicesPage(QWidget):
         bar.addWidget(self.status)
         bar.addStretch()
         root.addLayout(bar)
-        self.table = _table(["Status", "Label", "Serial", "Model", "IP", "Port",
-                             "Firmware", "Last seen", "Events", "Id"])
+        self.table = _table(["Status", "Label", "Serial", "EMS serial", "Model", "IP",
+                             "Port", "Firmware", "Last seen", "Events", "Id"])
         self.table.setColumnHidden(9, True)
+        self.table.setColumnHidden(10, True)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         root.addWidget(self.table, 1)
         acts = QHBoxLayout()
@@ -350,6 +371,7 @@ class DevicesPage(QWidget):
             ("Disable", lambda: self._act("disable")),
             ("Enable", lambda: self._act("enable")),
             ("Rename", lambda: self._act("label")),
+            ("EMS serial…", self._ems_serial),
             ("Remove", lambda: self._act("remove")),
         ):
             b = QPushButton(text)
@@ -370,7 +392,7 @@ class DevicesPage(QWidget):
         row = self.table.currentRow()
         if row < 0:
             return None
-        item = self.table.item(row, 9)
+        item = self.table.item(row, 10)
         return int(item.text()) if item else None
 
     def refresh(self) -> None:
@@ -381,9 +403,10 @@ class DevicesPage(QWidget):
                 st = "online" if d.get("online_now") else "registered"
             else:
                 st = d.get("status") or ""
+            ems_sn = (d.get("ems_serial") or "").strip()
             rows.append([
                 st, d.get("label") or "", d.get("serial_number") or "?",
-                d.get("model") or "—", d.get("ip_address") or "—",
+                ems_sn or "(same)", d.get("model") or "—", d.get("ip_address") or "—",
                 d.get("port") or "", d.get("firmware_version") or "—",
                 _fmt_ts(d.get("last_seen_at")), d.get("event_count") or 0, d["id"],
             ])
@@ -447,6 +470,29 @@ class DevicesPage(QWidget):
             _info(self, f"Test OK in {result.get('elapsed_ms')}ms — serial {result.get('serial')}")
         self.refresh()
 
+    def _ems_serial(self) -> None:
+        """The serial apexityedu.com knows this device by."""
+        did = self._selected_id()
+        if did is None:
+            _warn(self, "Select a device first.")
+            return
+        device = self.facade.ctx.repos["devices"].get_by_id(did)
+        current = (device or {}).get("ems_serial") or ""
+        text, ok = QInputDialog.getText(
+            self, "EMS device serial",
+            "Serial registered in apexityedu.com → Biometric Devices.\n"
+            "Leave empty to use the hardware serial.\n\n"
+            f"Hardware serial: {(device or {}).get('serial_number') or '?'}",
+            text=current)
+        if not ok:
+            return
+        try:
+            self.facade.set_ems_serial(did, text)
+            self.refresh()
+            _info(self, "EMS serial saved. The bridge will push under this serial.")
+        except FacadeError as exc:
+            _warn(self, str(exc))
+
     def _manual(self) -> None:
         dlg = QDialog(self)
         dlg.setWindowTitle("Manual device registration")
@@ -492,12 +538,12 @@ class StudentsPage(QWidget):
         self.setObjectName("page")
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 18, 22, 12)
-        title = QLabel("STUDENTS")
+        title = QLabel("PEOPLE")
         title.setObjectName("pageTitle")
         root.addWidget(title)
         bar = QHBoxLayout()
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search name / ID / roll…")
+        self.search.setPlaceholderText("Search name / ID / roll / staff no…")
         self.search.returnPressed.connect(lambda: self.refresh(reset=True))
         self.cls = QComboBox()
         self.cls.addItem("Class: all", "")
@@ -507,16 +553,23 @@ class StudentsPage(QWidget):
         self.act.addItem("Active+inactive", "all")
         self.act.addItem("Active", "1")
         self.act.addItem("Inactive", "0")
+        self.ptype = QComboBox()
+        self.ptype.addItem("Everyone", "")
+        self.ptype.addItem("Students", "student")
+        self.ptype.addItem("Teachers", "teacher")
+        self.ptype.addItem("Staff", "staff")
+        self.ptype.currentIndexChanged.connect(lambda: self.refresh(reset=True))
         refresh = QPushButton("Refresh from EMS")
         refresh.clicked.connect(self._refresh_roster)
         bar.addWidget(self.search, 1)
+        bar.addWidget(self.ptype)
         bar.addWidget(self.cls)
         bar.addWidget(self.sec)
         bar.addWidget(self.act)
         bar.addWidget(refresh)
         root.addLayout(bar)
-        self.table = _table(["Name", "EMS ID", "Admission", "Roll", "Class",
-                             "Section", "Status", "Biometric"])
+        self.table = _table(["Name", "EMS ID", "Type", "Admission / Staff no", "Roll",
+                             "Class", "Section", "Designation", "Status", "Biometric"])
         root.addWidget(self.table, 1)
         pager = QHBoxLayout()
         prev = QPushButton("‹")
@@ -529,7 +582,7 @@ class StudentsPage(QWidget):
         pager.addWidget(self.page_info)
         pager.addWidget(nxt)
         pager.addStretch()
-        mapb = QPushButton("Map selected student…")
+        mapb = QPushButton("Map selected person…")
         mapb.setObjectName("primary")
         mapb.clicked.connect(self._map)
         pager.addWidget(mapb)
@@ -555,6 +608,7 @@ class StudentsPage(QWidget):
             search=self.search.text().strip() or None,
             class_name=self.cls.currentData() or None,
             section=self.sec.currentData() or None,
+            person_type=self.ptype.currentData() or None,
             active=active, page=self.page,
         )
         if self.cls.count() == 1:
@@ -564,8 +618,11 @@ class StudentsPage(QWidget):
         for s in data["students"]:
             rows.append([
                 s.get("name") or "", s.get("ems_student_id") or "",
-                s.get("admission_no") or "—", s.get("roll_no") or "—",
+                s.get("person_type") or "student",
+                s.get("admission_no") or s.get("employee_no") or "—",
+                s.get("roll_no") or "—",
                 s.get("class_name") or "—", s.get("section") or "—",
+                s.get("designation") or s.get("department") or "—",
                 "active" if s.get("active") else "inactive",
                 s.get("device_users") or "—",
             ])
@@ -593,14 +650,14 @@ class StudentsPage(QWidget):
         row = self.table.currentRow()
         student = self.table.item(row, 1).text() if row >= 0 and self.table.item(row, 1) else ""
         dlg = QDialog(self)
-        dlg.setWindowTitle("Map biometric user to student")
+        dlg.setWindowTitle("Map device user to person")
         form = QFormLayout(dlg)
         serial = QLineEdit()
         uid = QLineEdit()
         ems = QLineEdit(student)
         form.addRow("Device serial", serial)
         form.addRow("Device user ID", uid)
-        form.addRow("EMS student ID", ems)
+        form.addRow("EMS person ID", ems)
         okb = QPushButton("Save mapping")
         okb.setObjectName("primary")
         form.addRow(okb)
@@ -615,6 +672,240 @@ class StudentsPage(QWidget):
 
         okb.clicked.connect(go)
         dlg.exec()
+
+
+class DeviceUsersPage(QWidget):
+    """Who does each K40 actually know about — and who is that, really?
+
+    This page is the answer to "the software shows punches but not the user".
+    A terminal only ever reports a PIN; until that PIN is bound to a person in
+    the EMS directory, neither the bridge nor apexityedu can say who punched.
+    """
+
+    def __init__(self, facade: DesktopFacade, parent_window):
+        super().__init__()
+        self.facade = facade
+        self._win = parent_window
+        self._worker = None
+        self.setObjectName("page")
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 18, 22, 12)
+        title = QLabel("DEVICE USERS")
+        title.setObjectName("pageTitle")
+        root.addWidget(title)
+        hint = QLabel(
+            "Users enrolled on each terminal, read over the ZK protocol (read-only). "
+            "Bind every PIN to the student, teacher or staff member it belongs to — "
+            "punches then reach ApexityEdu attributed to a real person."
+        )
+        hint.setObjectName("muted")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        bar = QHBoxLayout()
+        self.device = QComboBox()
+        self.device.addItem("All devices", "")
+        self.device.currentIndexChanged.connect(lambda: self.refresh())
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search PIN / name / person…")
+        self.search.returnPressed.connect(self.refresh)
+        self.unmapped = QComboBox()
+        self.unmapped.addItem("Everyone", "")
+        self.unmapped.addItem("Only unmapped", "1")
+        self.unmapped.currentIndexChanged.connect(lambda: self.refresh())
+        bar.addWidget(self.device, 1)
+        bar.addWidget(self.search, 2)
+        bar.addWidget(self.unmapped)
+        root.addLayout(bar)
+
+        self.table = _table(["Device", "PIN", "Name on device", "Role", "Punches",
+                             "Last punch", "Mapped to", "Person type", "User id"])
+        self.table.setColumnHidden(8, True)
+        root.addWidget(self.table, 1)
+
+        acts = QHBoxLayout()
+        for text, fn in (
+            ("Read from device", self._read),
+            ("Push users to EMS", self._push),
+            ("Auto-map matches", self._auto),
+            ("Map to person…", self._map),
+            ("Unmap", self._unmap),
+        ):
+            b = QPushButton(text)
+            if text in ("Read from device", "Push users to EMS"):
+                b.setObjectName("primary")
+            b.clicked.connect(fn)
+            acts.addWidget(b)
+        acts.addStretch()
+        root.addLayout(acts)
+        self.status = QLabel("")
+        self.status.setObjectName("muted")
+        self.status.setWordWrap(True)
+        root.addWidget(self.status)
+
+    def refresh(self) -> None:
+        data = self.facade.device_users(
+            device_serial=self.device.currentData() or None,
+            search=self.search.text().strip() or None,
+            unmapped_only=self.unmapped.currentData() == "1",
+        )
+        if self.device.count() <= 1:
+            for d in data.get("devices") or []:
+                label = d.get("label") or d.get("serial_number") or "?"
+                self.device.addItem(f"{label} ({d.get('serial_number')})",
+                                    d.get("serial_number"))
+        rows = []
+        for u in data["device_users"]:
+            person = u.get("person_name")
+            ptype = u.get("person_type") or "—"
+            rows.append([
+                u.get("device_label") or u.get("device_serial") or "",
+                u.get("user_id") or "",
+                u.get("name") or "(no name on device)",
+                "admin" if (u.get("privilege") or 0) >= 14 else "user",
+                u.get("punch_count") or 0,
+                _fmt_ts(u.get("last_punch_at")),
+                person or ("" if u.get("mapping_id") else "NOT MAPPED"),
+                ptype if u.get("mapping_id") else "—",
+                u.get("user_id") or "",
+            ])
+        _set_rows(self.table, rows)
+        self.status.setText(
+            f"{data['total']} users · {data.get('unmapped', 0)} not mapped to a person")
+
+    def _selected(self) -> dict | None:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        serial_item = self.table.item(row, 0)
+        pin_item = self.table.item(row, 1)
+        if not pin_item:
+            return None
+        return {"pin": pin_item.text(), "device": serial_item.text() if serial_item else ""}
+
+    def _device_picker(self) -> int | None:
+        devices = self.facade.ctx.repos["devices"].list_active()
+        if not devices:
+            _warn(self, "No registered device. Register a K40 on the Devices page first.")
+            return None
+        if len(devices) == 1:
+            return devices[0]["id"]
+        labels = [f"{d.get('label') or d.get('serial_number')} ({d.get('serial_number')})"
+                  for d in devices]
+        choice, ok = QInputDialog.getItem(self, "Select device", "Device:", labels, 0, False)
+        if not ok:
+            return None
+        return devices[labels.index(choice)]["id"]
+
+    def _read(self) -> None:
+        did = self._device_picker()
+        if did is None:
+            return
+        self.status.setText("reading the user table from the device…")
+
+        def work():
+            return self.facade.read_device_users(did)
+
+        self._worker = Worker(work)
+        self._worker.done.connect(self._read_done)
+        self._worker.failed.connect(lambda m: (self.status.setText(""), _warn(self, m)))
+        self._worker.start()
+
+    def _read_done(self, result):
+        self.status.setText("")
+        _info(self, f"Read {result.get('on_device', 0)} users from the device "
+                    f"({result.get('inserted', 0)} new).")
+        self.refresh()
+
+    def _push(self) -> None:
+        try:
+            self.facade.push_device_users()
+            _info(self, "Queued. The bridge will publish the user tables to ApexityEdu now.")
+        except FacadeError as exc:
+            _warn(self, str(exc))
+
+    def _auto(self) -> None:
+        """Bind every PIN whose name (or number) matches exactly one person."""
+        serial = self.device.currentData() or None
+        try:
+            result = self.facade.auto_map(serial)
+        except FacadeError as exc:
+            _warn(self, str(exc))
+            return
+        ambiguous = result.get("ambiguous") or []
+        detail = f"{len(result['matched'])} bound automatically."
+        if ambiguous:
+            detail += ("\n\nLeft for you (" + str(len(ambiguous)) + " ambiguous):\n"
+                       + "\n".join(f"PIN {a['device_user_id']} — "
+                                    f"{', '.join(a['candidates']) or 'no match'}"
+                                    for a in ambiguous[:12]))
+        _info(self, detail)
+        self.refresh()
+
+    def _map(self) -> None:
+        row = self.table.currentRow()
+        if row < 0:
+            _warn(self, "Select a device user first.")
+            return
+        pin = self.table.item(row, 1).text()
+        serial = self.table.item(row, 0).text()
+        devices = self.facade.ctx.repos["devices"].list_active()
+        serials = [d["serial_number"] for d in devices]
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Bind PIN {pin} to a person")
+        form = QFormLayout(dlg)
+        sbox = QComboBox()
+        for sn in serials:
+            sbox.addItem(sn, sn)
+        if serial in serials:
+            sbox.setCurrentIndex(serials.index(serial))
+        elif serials:
+            _warn(dlg, f"Pick the device serial — {serial!r} is a display label.")
+        person = QLineEdit()
+        person.setPlaceholderText("EMS person id (People page) — e.g. S1001 or T12")
+        form.addRow("Device serial", sbox)
+        form.addRow("PIN (device user id)", QLabel(pin))
+        form.addRow("EMS person id", person)
+        okb = QPushButton("Save mapping")
+        okb.setObjectName("primary")
+        form.addRow(okb)
+
+        def go():
+            try:
+                self.facade.assign_mapping(sbox.currentData(), pin, person.text().strip())
+                dlg.accept()
+                self.refresh()
+            except FacadeError as exc:
+                _warn(dlg, str(exc))
+
+        okb.clicked.connect(go)
+        dlg.exec()
+
+    def _unmap(self) -> None:
+        row = self.table.currentRow()
+        if row < 0:
+            _warn(self, "Select a device user first.")
+            return
+        pin = self.table.item(row, 1).text()
+        serial = self.table.item(row, 0).text()
+        devices = self.facade.ctx.repos["devices"].list_active()
+        for d in devices:
+            if (d.get("label") or d.get("serial_number")) == serial or \
+                    d["serial_number"] == serial:
+                mapping = self.facade.ctx.repos["mappings"].get(d["serial_number"], pin)
+                if not mapping:
+                    _info(self, "That device user is not mapped.")
+                    return
+                if not _ask(self, f"Remove the mapping for PIN {pin}?"):
+                    return
+                try:
+                    self.facade.unassign_mapping(mapping["id"])
+                    self.refresh()
+                except FacadeError as exc:
+                    _warn(self, str(exc))
+                return
+        _warn(self, "Select a row that belongs to a registered device.")
+
 
 
 class AttendancePage(QWidget):
@@ -764,6 +1055,9 @@ class SettingsPage(QWidget):
             ("collect_interval", "Collect interval (s)"),
             ("sync_interval", "Sync retry base (s)"),
             ("roster_interval", "Roster interval (s)"),
+            ("users_sync_interval", "Device-user sync interval (s)"),
+            ("ems_push_users", "Publish device users to EMS (1/0)"),
+            ("ems_execute_commands", "Answer read-only EMS commands (1/0)"),
         ):
             edit = QLineEdit()
             self.fields[key] = edit
@@ -773,9 +1067,15 @@ class SettingsPage(QWidget):
         save.clicked.connect(self._save)
         test = QPushButton("Test EMS connection")
         test.clicked.connect(self._test)
+        verify = QPushButton("Verify what the EMS accepts")
+        verify.clicked.connect(self._verify)
+        diag2 = QPushButton("Verify + copy report")
+        diag2.clicked.connect(lambda: self._verify(copy=True))
         row = QHBoxLayout()
         row.addWidget(save)
         row.addWidget(test)
+        row.addWidget(verify)
+        row.addWidget(diag2)
         row.addStretch()
         form.addRow(row)
         self.token_lbl = QLabel("")
@@ -832,6 +1132,21 @@ class SettingsPage(QWidget):
             _info(self, f"Probe: {d.get('probe')}\nHealth: {health}")
         except FacadeError as exc:
             _warn(self, str(exc))
+
+    def _verify(self, copy: bool = False) -> None:
+        """Handshake-green is not proof — show what the server really accepts."""
+        try:
+            report = self.facade.ems_verify()
+        except FacadeError as exc:
+            _warn(self, str(exc))
+            return
+        text = report.get("text") or str(report)
+        if copy:
+            from PySide6.QtWidgets import QApplication
+            QApplication.clipboard().setText(text)
+            _info(self, "Report copied to the clipboard.\n\n" + text)
+        else:
+            _info(self, text)
 
     def _save_token(self) -> None:
         try:
@@ -991,6 +1306,7 @@ class MainWindow(QMainWindow):
         self.pages = {
             "overview": OverviewPage(facade),
             "devices": DevicesPage(facade, self),
+            "device_users": DeviceUsersPage(facade, self),
             "students": StudentsPage(facade),
             "attendance": AttendancePage(facade),
             "logs": LogsPage(facade),

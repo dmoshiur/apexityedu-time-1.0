@@ -1,13 +1,73 @@
--- ApexityEdu Bridge — SQLite schema reference (v1)
+-- ApexityEdu Bridge — SQLite schema reference (v3)
 -- Canonical definitions live in apexity_bridge/database/migrations.py;
 -- this file is generated for readability. Fresh installs apply migrations.
 
-CREATE TABLE application_settings (
-    key        TEXT PRIMARY KEY,
-    value      TEXT,
-    is_secret  INTEGER NOT NULL DEFAULT 0,        -- secrets land in the OS credential store instead
-    updated_at TEXT NOT NULL
+CREATE TABLE devices (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    serial_number    TEXT,                        -- strongest identity signal; NULL = not yet identified
+    mac_address    TEXT,                          -- may be unavailable across routed networks; never sole identity
+    model            TEXT,
+    firmware_version TEXT,
+    platform         TEXT,
+    ip_address       TEXT,                        -- mutable; last verified address only
+    port             INTEGER NOT NULL DEFAULT 4370,
+    comm_key         INTEGER NOT NULL DEFAULT 0,
+    status           TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','registered','disabled')),
+    label            TEXT,
+    notes            TEXT,
+    first_seen_at    TEXT NOT NULL,
+    last_seen_at     TEXT,
+    ip_updated_at    TEXT,                        -- last automatic IP correction
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    ems_serial       TEXT,                        -- serial the EMS knows this device by (override)
+    users_pushed_hash TEXT,                       -- last user table published to the EMS
+    users_last_read_at TEXT);
+
+CREATE TABLE device_users_cache (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_serial  TEXT NOT NULL,                 -- hardware serial (identity)
+    user_id        TEXT NOT NULL,                 -- the PIN / biometric user id
+    name           TEXT,
+    privilege      INTEGER,                       -- 0 = user, 14 = admin (device role)
+    card           TEXT,
+    password       TEXT,                          -- never uploaded to the EMS
+    first_seen_at  TEXT NOT NULL,
+    last_seen_at   TEXT,
+    updated_at     TEXT NOT NULL,
+    UNIQUE(device_serial, user_id)
 );
+
+CREATE TABLE "device_user_mappings" (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_serial  TEXT NOT NULL,
+    device_user_id TEXT NOT NULL,
+    ems_student_id TEXT NOT NULL,
+    mapped_by      TEXT,
+    source         TEXT NOT NULL DEFAULT 'manual'
+                   CHECK (source IN ('manual', 'csv', 'auto')),
+    active         INTEGER NOT NULL DEFAULT 1,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    UNIQUE(device_serial, device_user_id)
+);
+
+CREATE TABLE students_cache (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    ems_student_id TEXT NOT NULL UNIQUE,          -- EMS-side identifier (as string)
+    admission_no   TEXT,
+    roll_no        TEXT,
+    name           TEXT NOT NULL,
+    class_name     TEXT,
+    section        TEXT,
+    active         INTEGER NOT NULL DEFAULT 1,
+    raw_json       TEXT,                          -- untouched EMS payload for troubleshooting
+    fetched_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    person_type    TEXT NOT NULL DEFAULT 'student',   -- student | teacher | staff | other
+    employee_no    TEXT,
+    designation    TEXT,
+    department     TEXT);
 
 CREATE TABLE attendance_events (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,49 +93,6 @@ CREATE TABLE attendance_events (
     remote_id         TEXT                        -- EMS record id after acceptance
 );
 
-CREATE TABLE audit_logs (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    actor      TEXT NOT NULL,                     -- dashboard admin name or 'system'
-    action     TEXT NOT NULL,
-    entity     TEXT,
-    entity_id  TEXT,
-    detail     TEXT,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE device_user_mappings (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_serial  TEXT NOT NULL,
-    device_user_id TEXT NOT NULL,
-    ems_student_id TEXT NOT NULL,
-    mapped_by      TEXT,
-    source         TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','csv')),
-    active         INTEGER NOT NULL DEFAULT 1,
-    created_at     TEXT NOT NULL,
-    updated_at     TEXT NOT NULL,
-    UNIQUE(device_serial, device_user_id)
-);
-
-CREATE TABLE devices (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    serial_number    TEXT,                        -- strongest identity signal; NULL = not yet identified
-    mac_address    TEXT,                          -- may be unavailable across routed networks; never sole identity
-    model            TEXT,
-    firmware_version TEXT,
-    platform         TEXT,
-    ip_address       TEXT,                        -- mutable; last verified address only
-    port             INTEGER NOT NULL DEFAULT 4370,
-    comm_key         INTEGER NOT NULL DEFAULT 0,
-    status           TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','registered','disabled')),
-    label            TEXT,
-    notes            TEXT,
-    first_seen_at    TEXT NOT NULL,
-    last_seen_at     TEXT,
-    ip_updated_at    TEXT,                        -- last automatic IP correction
-    created_at       TEXT NOT NULL,
-    updated_at       TEXT NOT NULL
-);
-
 CREATE TABLE discovery_observations (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     ip_address    TEXT NOT NULL,
@@ -90,20 +107,19 @@ CREATE TABLE discovery_observations (
     observed_at   TEXT NOT NULL
 );
 
-CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
-
-CREATE TABLE students_cache (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    ems_student_id TEXT NOT NULL UNIQUE,          -- EMS-side identifier (as string)
-    admission_no   TEXT,
-    roll_no        TEXT,
-    name           TEXT NOT NULL,
-    class_name     TEXT,
-    section        TEXT,
-    active         INTEGER NOT NULL DEFAULT 1,
-    raw_json       TEXT,                          -- untouched EMS payload for troubleshooting
-    fetched_at     TEXT NOT NULL,
-    updated_at     TEXT NOT NULL
+CREATE TABLE "sync_queue" (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_type    TEXT NOT NULL CHECK (task_type IN ('fetch_students','fetch_people',
+                                                    'register_device','push_attendance',
+                                                    'sync_device_users')),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed')),
+    run_after    TEXT NOT NULL,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 25,
+    last_error   TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
 );
 
 CREATE TABLE sync_attempts (
@@ -117,43 +133,40 @@ CREATE TABLE sync_attempts (
     attempted_at TEXT NOT NULL
 );
 
-CREATE TABLE sync_queue (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_type    TEXT NOT NULL CHECK (task_type IN ('fetch_students','register_device','push_attendance')),
-    payload_json TEXT NOT NULL DEFAULT '{}',
-    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed')),
-    run_after    TEXT NOT NULL,
-    attempts     INTEGER NOT NULL DEFAULT 0,
-    max_attempts INTEGER NOT NULL DEFAULT 25,
-    last_error   TEXT,
-    created_at   TEXT NOT NULL,
-    updated_at   TEXT NOT NULL
+CREATE TABLE application_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    is_secret  INTEGER NOT NULL DEFAULT 0,        -- secrets land in the OS credential store instead
+    updated_at TEXT NOT NULL
 );
 
+CREATE TABLE audit_logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor      TEXT NOT NULL,                     -- dashboard admin name or 'system'
+    action     TEXT NOT NULL,
+    entity     TEXT,
+    entity_id  TEXT,
+    detail     TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+
 CREATE INDEX idx_attempts_time ON sync_attempts(attempted_at DESC);
-
 CREATE INDEX idx_audit_time ON audit_logs(created_at DESC);
-
+CREATE INDEX idx_device_users_name ON device_users_cache(name);
+CREATE INDEX idx_device_users_serial ON device_users_cache(device_serial, user_id);
 CREATE INDEX idx_devices_status ON devices(status);
-
 CREATE INDEX idx_events_devuser ON attendance_events(device_serial, device_user_id);
-
 CREATE INDEX idx_events_first_seen ON attendance_events(first_seen_at DESC);
-
 CREATE INDEX idx_events_sync ON attendance_events(sync_status, next_retry_at);
-
 CREATE INDEX idx_events_ts ON attendance_events(event_timestamp DESC);
-
-CREATE INDEX idx_mappings_student ON device_user_mappings(ems_student_id);
-
+CREATE INDEX idx_mappings_student
+    ON device_user_mappings(ems_student_id);
 CREATE INDEX idx_observations_ip ON discovery_observations(ip_address, observed_at);
-
 CREATE INDEX idx_queue_due ON sync_queue(status, run_after);
-
 CREATE INDEX idx_students_class ON students_cache(class_name, section);
-
 CREATE INDEX idx_students_name ON students_cache(name);
-
+CREATE INDEX idx_students_type ON students_cache(person_type);
 CREATE UNIQUE INDEX uq_devices_serial
     ON devices(serial_number) WHERE serial_number IS NOT NULL;
-

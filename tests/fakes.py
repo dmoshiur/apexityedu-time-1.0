@@ -37,6 +37,9 @@ class FakeIclockServer:
         self.seen: set[tuple] = set()
         self.handshakes: list[str] = []
         self.polls: list[str] = []
+        self.user_uploads: list[dict] = []      # {"sn": str, "users": {...}}
+        self.attlog_posts: list[dict] = []      # {"sn": str, "lines": [...]}
+        self.user_reply = "OK"
         self.rejected_serials: set[str] = set()
         self.poll_status = 200
         self.poll_body = "OK"
@@ -91,9 +94,25 @@ class FakeIclockServer:
                     return
                 query = parse_qs(parsed.query)
                 sn = query.get("SN", [""])[0]
+                table = query.get("table", ["ATTLOG"])[0].upper()
                 length = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(length).decode("utf-8", errors="replace")
                 lines = [ln for ln in body.splitlines() if ln.strip()]
+
+                if table == "USER":
+                    users = {}
+                    for ln in lines:
+                        fields = dict(
+                            part.split("=", 1)
+                            for part in ln.replace("USER ", "").split("\t")
+                            if "=" in part
+                        )
+                        pin = fields.get("PIN", "").strip()
+                        if pin:
+                            users[pin] = fields.get("Name", "")
+                    server.user_uploads.append({"sn": sn, "users": users})
+                    return self._reply(200, server.user_reply)
+                server.attlog_posts.append({"sn": sn, "lines": lines})
                 new_count = 0
                 limit = 1 if server.mode == "partial" else len(lines)
                 for ln in lines[:limit]:
@@ -140,6 +159,18 @@ class FakeRestServer:
             {"id": "S1003", "name": "Chinmoy Das", "admission_no": "ADM-003",
              "roll_no": "3", "class": "Seven", "section": "A", "active": False},
         ]
+        # students + teachers + staff: everybody who punches a terminal
+        self.people = [
+            *self.students,
+            {"id": "T2001", "name": "Sir Alam", "person_type": "teacher",
+             "designation": "Headmaster", "employee_no": "EMP-01", "active": True},
+            {"id": "T2002", "name": "Madam Nusrat", "person_type": "teacher",
+             "designation": "Assistant teacher", "employee_no": "EMP-02", "active": True},
+            {"id": "X3001", "name": "Bacchu Mia", "person_type": "staff",
+             "designation": "Guard", "employee_no": "EMP-77", "active": True},
+        ]
+        self.device_user_uploads: list[dict] = []
+        self.people_enabled = True       # False → emulate an EMS without /people
         self.seen: dict[str, int] = {}     # idempotency_key → remote_id
         self.registered_devices: list[dict] = []
         self.push_calls = 0
@@ -186,6 +217,24 @@ class FakeRestServer:
                         "students": page,
                         "next_cursor": str(nxt) if nxt < len(server.students) else None,
                     })
+                if parsed.path == "/api/v1/bridge/people":
+                    if not server.people_enabled:
+                        return self._reply(404, json.dumps({"error": "nope"}),
+                                           "application/json")
+                    if not self._auth_ok() and server.mode != "unauthorized":
+                        return self._reply(401, json.dumps({"error": "auth"}), "application/json")
+                    q = parse_qs(parsed.query)
+                    types = [t.strip() for t in (q.get("types", [""])[0] or "").split(",") if t.strip()]
+                    rows = server.people
+                    if types:
+                        rows = [p for p in rows if (p.get("person_type") or "student") in types]
+                    cursor = int(q.get("cursor", ["0"])[0])
+                    page = rows[cursor:cursor + server.page_size]
+                    nxt = cursor + server.page_size
+                    return self._out(200, {
+                        "people": page,
+                        "next_cursor": str(nxt) if nxt < len(rows) else None,
+                    })
                 return self._reply(404, json.dumps({"error": "nope"}), "application/json")
 
             def do_POST(self):
@@ -197,6 +246,14 @@ class FakeRestServer:
                     server.registered_devices.append(body)
                     return self._out(200, {"ok": True,
                                            "device_id": f"dev-{body.get('serial', '?')}"})
+                if parsed.path == "/api/v1/bridge/devices/users":
+                    if not self._auth_ok() and server.mode != "unauthorized":
+                        return self._reply(401, json.dumps({"error": "auth"}), "application/json")
+                    body = self._json_body()
+                    server.device_user_uploads.append(body)
+                    return self._out(200, {"ok": True,
+                                           "accepted": len(body.get("users", [])),
+                                           "detail": "stored"})
                 if parsed.path == "/api/v1/bridge/attendance/batch":
                     if not self._auth_ok() and server.mode != "unauthorized":
                         return self._reply(401, json.dumps({"error": "auth"}), "application/json")

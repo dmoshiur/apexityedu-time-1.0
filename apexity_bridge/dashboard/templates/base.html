@@ -18,7 +18,8 @@
   <nav>
     <a href="{{ url_for('overview') }}" class="{{ 'active' if request.endpoint == 'overview' }}">Overview</a>
     <a href="{{ url_for('devices_page') }}" class="{{ 'active' if request.endpoint == 'devices_page' }}">Devices</a>
-    <a href="{{ url_for('students_page') }}" class="{{ 'active' if request.endpoint == 'students_page' }}">Students</a>
+    <a href="{{ url_for('device_users_page') }}" class="{{ 'active' if request.endpoint == 'device_users_page' }}">Device Users</a>
+    <a href="{{ url_for('students_page') }}" class="{{ 'active' if request.endpoint == 'students_page' }}">People</a>
     <a href="{{ url_for('attendance_page') }}" class="{{ 'active' if request.endpoint == 'attendance_page' }}">Attendance</a>
     <a href="{{ url_for('logs_page') }}" class="{{ 'active' if request.endpoint == 'logs_page' }}">Logs</a>
     <a href="{{ url_for('settings_page') }}" class="{{ 'active' if request.endpoint == 'settings_page' }}">Settings</a>

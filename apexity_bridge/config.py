@@ -45,6 +45,17 @@ class Config:
     ems_iclock_path: str = "/iclock"
     ems_allow_insecure_localhost: bool = False
     ems_timeout: int = 15
+    # "auto" = use the REST /people endpoint when iClock is the push protocol
+    # (iClock has no roster download of its own). off = never try.
+    ems_roster_mode: str = "auto"
+    # Publish each terminal's user table (PIN + name) so the EMS can map a
+    # punch to a real person. Never includes templates or passwords.
+    ems_push_users: bool = True
+    # Answer read-only ADMS commands the EMS sends through getrequest
+    # (DATA QUERY USERINFO / ATTLOG). Destructive commands are never executed.
+    ems_execute_commands: bool = True
+    # Seconds between device user-table reads (and EMS re-publishes).
+    users_sync_interval: int = 900
 
     # storage
     db_path: Path = Path("bridge.db")
@@ -157,6 +168,10 @@ def load_config(env_file: str | os.PathLike | None = None, environ: dict | None 
         ems_iclock_path=env.get("EMS_ICLOCK_PATH", "/iclock") or "/iclock",
         ems_allow_insecure_localhost=_bool(env.get("EMS_ALLOW_INSECURE_LOCALHOST")),
         ems_timeout=_int(env.get("EMS_TIMEOUT"), 15),
+        ems_roster_mode=(env.get("EMS_ROSTER_MODE", "auto").strip().lower() or "auto"),
+        ems_push_users=_bool(env.get("EMS_PUSH_USERS"), True),
+        ems_execute_commands=_bool(env.get("EMS_EXECUTE_COMMANDS"), True),
+        users_sync_interval=max(60, _int(env.get("USERS_SYNC_INTERVAL"), 900)),
         db_path=paths.default_db_path(),
         data_dir=paths.default_data_dir(),
         dashboard_host=env.get("DASHBOARD_HOST", "127.0.0.1"),
@@ -183,6 +198,13 @@ def load_config(env_file: str | os.PathLike | None = None, environ: dict | None 
 
 # Keys an administrator may edit from the dashboard (stored in the DB, winning
 # over the environment). Anything secret or security-critical stays env-only.
+def _as_bool(value) -> bool:
+    """bool() would turn the string "0" into True — settings are strings."""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 DB_MANAGED_KEYS = {
     "scan_interval": ("discovery_interval", int),
     "sync_interval": ("sync_retry_base", int),
@@ -191,6 +213,9 @@ DB_MANAGED_KEYS = {
     "ems_base_url": ("ems_base_url", str),
     "ems_protocol": ("ems_protocol", str),
     "device_timezone": ("device_timezone", str),
+    "ems_push_users": ("ems_push_users", _as_bool),
+    "ems_execute_commands": ("ems_execute_commands", _as_bool),
+    "users_sync_interval": ("users_sync_interval", int),
 }
 
 
@@ -228,3 +253,9 @@ class SettingsView:
     def ems_protocol(self) -> str: return str(self.get("ems_protocol"))
     @property
     def device_timezone(self) -> str: return str(self.get("device_timezone"))
+    @property
+    def ems_push_users(self) -> bool: return bool(self.get("ems_push_users"))
+    @property
+    def ems_execute_commands(self) -> bool: return bool(self.get("ems_execute_commands"))
+    @property
+    def users_sync_interval(self) -> int: return int(self.get("users_sync_interval"))

@@ -1,49 +1,57 @@
-"""Student roster fetching from the EMS (with honest failure modes)."""
+"""People directory (students + teachers + staff) fetched from the EMS.
+
+Previously this only ever downloaded "students", which is why a school could
+see punches arriving but no idea who they belonged to: teachers and
+non-teaching staff punch the same terminals and were simply absent from the
+bridge. The EMS directory is now downloaded as *people*, each carrying a
+``person_type``.
+
+Failure modes stay honest:
+* EMS unavailable → raise EmsUnavailableError (caller schedules retry).
+* Protocol missing (iClock without the REST roster side-channel) →
+  EmsProtocolError with a documented message; the failure is cached for the
+  dashboard and no people are ever invented.
+"""
 from __future__ import annotations
 
 import logging
 
-from ..ems.base import EmsProtocolError, EmsUnavailableError, EmsAuthError, StudentInfo
+from ..ems.base import EmsProtocolError, EmsUnavailableError, EmsAuthError
 
 log = logging.getLogger("apexity_bridge.students.directory")
 
+MAX_PAGES = 100
+
 
 def refresh_roster(client, repos, queue_repo=None) -> dict:
-    """Pull the full roster, handling pagination. Returns a stats dict.
+    """Alias kept for existing call sites — see :func:`refresh_people`."""
+    return refresh_people(client, repos, queue_repo=queue_repo)
 
-    Failure modes:
-    * EMS unavailable → raise EmsUnavailableError (caller schedules retry).
-    * Protocol missing (classic iClock) → EmsProtocolError with a documented
-      message; we cache the failure state for the dashboard and never invent
-      students.
-    """
-    stats = {"fetched": 0, "inserted": 0, "updated": 0, "ok": False, "error": None}
+
+def refresh_people(client, repos, queue_repo=None) -> dict:
+    """Pull the full directory, handling pagination. Returns a stats dict."""
+    stats = {
+        "fetched": 0, "inserted": 0, "updated": 0, "ok": False, "error": None,
+        "by_type": {},
+    }
     cursor = None
     pages = 0
     inserted = updated = 0
+    by_type: dict[str, int] = {}
     try:
         while True:
-            page = client.fetch_students(cursor)
-            ins, upd = repos["students"].upsert_many(
-                [
-                    {
-                        "ems_student_id": s.ems_student_id,
-                        "name": s.name,
-                        "admission_no": s.admission_no,
-                        "roll_no": s.roll_no,
-                        "class_name": s.class_name,
-                        "section": s.section,
-                        "active": s.active,
-                        **({"raw": s.raw} if s.raw else {}),
-                    }
-                    for s in page.students
-                ]
-            )
+            fetch = getattr(client, "fetch_people", None) or client.fetch_students
+            page = fetch(cursor)
+            rows = []
+            for person in page.students:
+                by_type[person.person_type] = by_type.get(person.person_type, 0) + 1
+                rows.append(person.as_cache_row())
+            ins, upd = repos["students"].upsert_many(rows)
             inserted += ins
             updated += upd
             stats["fetched"] += len(page.students)
             pages += 1
-            if page.complete or not page.next_cursor or pages > 100:
+            if page.complete or not page.next_cursor or pages > MAX_PAGES:
                 break
             cursor = page.next_cursor
     except EmsProtocolError as exc:
@@ -52,10 +60,13 @@ def refresh_roster(client, repos, queue_repo=None) -> dict:
         raise
     except (EmsUnavailableError, EmsAuthError):
         raise
-    stats.update(ok=True, inserted=inserted, updated=updated)
+    stats.update(ok=True, inserted=inserted, updated=updated, by_type=by_type)
     repos["settings"].delete("roster_last_error")
     from ..timeutils import iso_utc
     repos["settings"].set("roster_last_sync", iso_utc())
-    log.info("roster refreshed: %d students (%d new, %d updated)",
-             stats["fetched"], inserted, updated)
+    log.info(
+        "people directory refreshed: %d people (%d new, %d updated) %s",
+        stats["fetched"], inserted, updated,
+        " ".join(f"{k}={v}" for k, v in sorted(by_type.items())),
+    )
     return stats

@@ -25,6 +25,7 @@ from .base import (
     RosterPage,
     StudentInfo,
     UploadOutcome,
+    UserSyncOutcome,
 )
 
 log = logging.getLogger("apexity_bridge.ems.rest")
@@ -91,15 +92,6 @@ class RestEmsClient:
         return payload
 
     # ---------------------------------------------------------------- contract --
-    def health_check(self) -> HealthResult:
-        payload = self._request("GET", "/health")
-        return HealthResult(
-            ok=bool(payload.get("ok")),
-            server_time=payload.get("server_time"),
-            detail=str(payload.get("detail", ""))[:200],
-            protocol=self.protocol_name,
-        )
-
     def register_device(self, *, serial: str, model: str | None,
                         firmware: str | None, label: str | None) -> RegisterResult:
         payload = self._request(
@@ -112,19 +104,63 @@ class RestEmsClient:
             detail=str(payload.get("detail", ""))[:200],
         )
 
+    def _try_get(self, suffixes: tuple[str, ...], params: dict) -> tuple[str, dict]:
+        """GET the first endpoint that exists (404 → try the next one)."""
+        last: Exception | None = None
+        for suffix in suffixes:
+            try:
+                return suffix, self._request("GET", suffix, params=params)
+            except EmsProtocolError as exc:
+                last = exc
+                if "404" not in str(exc):
+                    raise
+        raise last  # type: ignore[misc]
+
     def fetch_students(self, cursor: str | None = None) -> RosterPage:
+        """Backwards-compatible name — the directory contains more than students."""
+        return self.fetch_people(cursor)
+
+    def fetch_people(self, cursor: str | None = None,
+                     types: tuple[str, ...] | None = None) -> RosterPage:
+        """Download students **and** teachers **and** staff.
+
+        Preferred endpoint: ``GET /people`` (``{"people": [...]}``, each with a
+        ``person_type``). Falls back to the legacy ``GET /students`` so an EMS
+        that only implemented the original contract keeps working — those rows
+        are cached as ``person_type="student"``.
+        """
         params: dict = {"limit": 500}
         if cursor:
             params["cursor"] = cursor
-        payload = self._request("GET", "/students", params=params)
-        students_raw = payload.get("students")
-        if not isinstance(students_raw, list):
-            raise EmsProtocolError("GET /students response missing 'students' list")
-        students = []
-        for s in students_raw:
+        if types:
+            params["types"] = ",".join(types)
+
+        suffix, payload = self._try_get(("/people", "/students"), params)
+        legacy = suffix == "/students"
+        people_raw = payload.get("people") if not legacy else None
+        if not isinstance(people_raw, list):
+            key = "students" if legacy else "people"
+            people_raw = payload.get(key)
+        if not isinstance(people_raw, list):
+            raise EmsProtocolError(
+                f"GET {suffix} response missing a '{'people' if not legacy else 'students'}' list"
+            )
+
+        people = []
+        for s in people_raw:
             if not isinstance(s, dict) or "id" not in s:
-                raise EmsProtocolError(f"invalid student entry: {str(s)[:200]}")
-            students.append(
+                raise EmsProtocolError(f"invalid person entry: {str(s)[:200]}")
+            # A directory entry without an explicit type is a student — that is
+            # the historical shape of every EMS roster we have seen.
+            person_type = str(s.get("person_type") or "student")
+            person_type = person_type.strip().lower()
+            if person_type in ("employee", "teacher", "faculty"):
+                person_type = "teacher"
+            elif person_type in ("worker", "non-teaching", "nonteaching"):
+                person_type = "staff"
+            elif person_type not in ("student", "teacher", "staff", "other"):
+                person_type = "other"
+            people.append(
                 StudentInfo(
                     ems_student_id=str(s["id"]),
                     name=str(s.get("name", "")).strip() or "(unnamed)",
@@ -133,19 +169,69 @@ class RestEmsClient:
                     class_name=_opt(s.get("class")),
                     section=_opt(s.get("section")),
                     active=bool(s.get("active", True)),
+                    person_type=person_type,
+                    employee_no=_opt(s.get("employee_no") or s.get("employee_id")
+                                     or s.get("staff_id")),
+                    designation=_opt(s.get("designation")),
+                    department=_opt(s.get("department")),
                     raw=s,
                 )
             )
         next_cursor = payload.get("next_cursor")
         return RosterPage(
-            students=students,
+            students=people,
             next_cursor=str(next_cursor) if next_cursor else None,
             complete=not next_cursor,
         )
 
-    def push_attendance(self, events: list[dict]) -> UploadOutcome:
+    def push_users(self, serial: str, users: list[dict]) -> UserSyncOutcome:
+        """Optional: publish a terminal's user table over REST.
+
+        Only needed when the EMS wants to show "device users" in its own UI and
+        has no iClock USER handler. 404 → reported as unsupported, not fatal.
+        """
+        if not users:
+            return UserSyncOutcome(accepted=0, detail="no users to push")
+        try:
+            payload = self._request(
+                "POST", "/devices/users",
+                json={
+                    "serial": serial,
+                    "users": [
+                        {"user_id": u.get("user_id"), "name": u.get("name"),
+                         "privilege": u.get("privilege"), "card": u.get("card")}
+                        for u in users
+                    ],
+                },
+            )
+        except EmsProtocolError as exc:
+            if "404" in str(exc):
+                return UserSyncOutcome(
+                    accepted=0,
+                    detail="EMS does not implement POST /devices/users (optional)",
+                    fatal=None,
+                )
+            return UserSyncOutcome(fatal=str(exc)[:300])
+        return UserSyncOutcome(
+            accepted=int(payload.get("accepted", len(users)) or 0),
+            detail=str(payload.get("detail", ""))[:200],
+        )
+
+    def health_check(self) -> HealthResult:
+        payload = self._request("GET", "/health")
+        return HealthResult(
+            ok=bool(payload.get("ok")),
+            server_time=payload.get("server_time"),
+            detail=str(payload.get("detail", ""))[:200],
+            protocol=self.protocol_name,
+        )
+
+    def push_attendance(self, events: list[dict], *, serial: str | None = None) -> UploadOutcome:
         if not events:
             return UploadOutcome()
+        if serial:
+            for ev in events:
+                ev.setdefault("ems_serial", serial)
         payload = self._request(
             "POST", "/attendance/batch",
             json={
@@ -159,6 +245,8 @@ class RestEmsClient:
                         "status": ev.get("status"),
                         "verify": ev.get("verify_mode") or ev.get("punch"),
                         "ems_student_id": ev.get("ems_student_id"),
+                        "ems_person_id": ev.get("ems_student_id"),
+                        "ems_serial": ev.get("ems_serial") or ev["device_serial"],
                     }
                     for ev in events
                 ]

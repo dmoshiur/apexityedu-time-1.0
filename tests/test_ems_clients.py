@@ -141,15 +141,38 @@ def test_rest_health_and_register(rest_server):
 
 
 def test_rest_students_pagination(rest_server):
+    """The directory is now *people* — students, teachers and staff together."""
     client = _rest_client(rest_server)
-    page1 = client.fetch_students()
+    page1 = client.fetch_people()
     assert len(page1.students) == 2                       # server.page_size = 2
     assert page1.next_cursor == "2"
-    page2 = client.fetch_students(page1.next_cursor)
-    assert len(page2.students) == 1
-    assert page2.complete
+    page2 = client.fetch_people(page1.next_cursor)
+    assert len(page2.students) == 2
+    assert not page2.complete
+    page3 = client.fetch_people(page2.next_cursor)
+    assert page3.complete
     assert page1.students[0].name == "Afnan Rahman"
-    assert page2.students[0].active is False
+
+    everybody = [*page1.students, *page2.students, *page3.students]
+    kinds = {p.person_type for p in everybody}
+    assert {"student", "teacher", "staff"} <= kinds       # not students only
+    teacher = next(p for p in everybody if p.person_type == "teacher")
+    assert teacher.designation == "Headmaster"
+
+
+def test_rest_people_falls_back_to_legacy_students_endpoint(rest_server):
+    """An EMS that only implemented /students keeps working (students only)."""
+    client = _rest_client(rest_server)
+    rest_server.people_enabled = False
+    rows, cursor = [], None
+    while True:
+        page = client.fetch_people(cursor)
+        rows.extend(page.students)
+        if page.complete or not page.next_cursor:
+            break
+        cursor = page.next_cursor
+    assert {p.person_type for p in rows} == {"student"}
+    assert len(rows) == 3
 
 
 def test_rest_push_accept_duplicate_reject(rest_server):

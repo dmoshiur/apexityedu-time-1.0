@@ -38,6 +38,8 @@ class AttendanceCollector:
         self._adapter_factory = getattr(ctx, "adapter_factory", None) or create_adapter
         self._wake = threading.Event()
         self.last_round: dict[int, dict] = {}        # device_id → stats for dashboard
+        self._next_users_at: dict[int, float] = {}   # device_id → monotonic deadline
+        self.last_users_round: dict[int, dict] = {}  # device_id → user-sync stats
 
     # ------------------------------------------------------------------ loop --
     def start(self) -> None:
@@ -116,6 +118,8 @@ class AttendanceCollector:
 
                 records = adapter.read_attendance()
                 stats["total_read"] = len(records)
+                if self._users_due(device_id):
+                    stats["users"] = self._read_users(adapter, device)
             finally:
                 adapter.disconnect()
 
@@ -172,6 +176,69 @@ class AttendanceCollector:
         finally:
             self._note(device, stats)
         return stats
+
+    # ----------------------------------------------------------- device users --
+    def _users_due(self, device_id: int) -> bool:
+        return time.monotonic() >= self._next_users_at.get(device_id, 0.0)
+
+    def _read_users(self, adapter, device: dict) -> dict:
+        """Mirror the terminal's enrolled users into SQLite (read-only on device).
+
+        Without this the bridge only ever knows bare PINs: it can show
+        "user 7 punched" but never who user 7 is, and neither can the EMS.
+        Fingerprint templates and passwords are never read.
+        """
+        interval = max(60, int(getattr(self.ctx.config, "users_sync_interval", 900)))
+        try:
+            users = adapter.read_users() or []
+        except DeviceError as exc:
+            log.info("user table could not be read from %s (%s) — punches unaffected",
+                     device.get("serial_number"), exc)
+            self._next_users_at[device["id"]] = time.monotonic() + min(interval, 300)
+            return {"ok": False, "error": str(exc)[:200]}
+        rows = [
+            {"user_id": u.user_id, "name": u.name,
+             "privilege": getattr(u, "privilege", None), "card": getattr(u, "card", None)}
+            for u in users
+        ]
+        result = self.ctx.repos["device_users"].replace_for(device["serial_number"], rows)
+        self.ctx.repos["devices"].set_users_last_read(device["id"])
+        self._next_users_at[device["id"]] = time.monotonic() + interval
+        self.last_users_round[device["id"]] = {**result, "at": iso_utc(), "ok": True}
+        log.info("device %s: %d users cached (%d new)",
+                 device["serial_number"], result["cached"], result["inserted"])
+        return {**result, "ok": True}
+
+    def refresh_users(self, device_id: int) -> dict:
+        """Admin action: read one device's user table right now."""
+        device = self.ctx.repos["devices"].get_by_id(device_id)
+        if not device or not device.get("serial_number"):
+            raise ValueError("device has no verified serial number")
+        if not device.get("ip_address"):
+            raise ValueError("device has no known IP address — run a LAN scan first")
+        adapter = self._adapter_factory(
+            host=device["ip_address"], port=int(device.get("port") or 4370),
+            comm_key=int(device.get("comm_key") or 0),
+            timeout=int(self.ctx.config.device_timeout),
+        )
+        try:
+            adapter.connect()
+            try:
+                identity = adapter.get_identity()
+                if identity.serial_number and identity.serial_number != device["serial_number"]:
+                    raise DeviceError(
+                        f"identity mismatch: {device['ip_address']} reports serial "
+                        f"{identity.serial_number}, expected {device['serial_number']}"
+                    )
+                return self._read_users(adapter, device)
+            finally:
+                adapter.disconnect()
+        finally:
+            # force the EMS side to re-publish the refreshed table
+            self.ctx.repos["devices"].set_users_pushed_hash(device_id, None)
+            if self.ctx.sync_worker:
+                self.ctx.sync_worker._next_users = 0.0
+                self.ctx.sync_worker.wake()
 
     # ----------------------------------------------------------------- backoff --
     def _penalise(self, device_id: int, multiplier: int = 1) -> None:

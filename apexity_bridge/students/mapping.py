@@ -21,6 +21,15 @@ from ..ems.base import EmsProtocolError
 
 log = logging.getLogger("apexity_bridge.students.mapping")
 
+
+def _norm(name: str | None) -> str:
+    """Normalise a name for comparison: case, spacing and punctuation."""
+    import re
+    import unicodedata
+
+    text = unicodedata.normalize("NFKC", (name or "").strip().lower())
+    return re.sub(r"[^\w\u0980-\u09ff]+", " ", text).strip()
+
 CSV_HEADER = ["device_serial", "device_user_id", "ems_student_id"]
 MAX_CSV_ROWS = 5000
 
@@ -87,6 +96,69 @@ class MappingService:
             entity_id=f"{row['device_serial']}:{row['device_user_id']}",
             detail=f"was → EMS student {row['ems_student_id']}",
         )
+
+    # ------------------------------------------------------------- auto-map ---
+    def auto_map(self, *, device_serial: str | None = None,
+                 apply: bool = True) -> dict:
+        """Bind device users to people automatically, only on an exact match.
+
+        Schools enrol hundreds of people; clicking through every PIN is how
+        mappings never get finished. This resolves the unambiguous ones:
+
+        1. the name on the terminal equals a person's name in the EMS
+           directory (case/space/punctuation insensitive, Bengali-safe);
+        2. otherwise the PIN equals a person's roll number, admission number
+           or employee number.
+
+        Anything ambiguous is reported and left alone — a wrong attendance
+        attribution is far worse than an unmapped PIN.
+        """
+        people = self.repos["students"].list(page_size=100000)[0]
+        users = self.repos["device_users"].list(
+            device_serial=device_serial, unmapped_only=True, page_size=100000)[0]
+
+        by_name: dict[str, list[dict]] = {}
+        by_number: dict[str, list[dict]] = {}
+        for person in people:
+            by_name.setdefault(_norm(person.get("name")), []).append(person)
+            for field in ("roll_no", "admission_no", "employee_no", "ems_student_id"):
+                value = (person.get(field) or "").strip()
+                if value:
+                    by_number.setdefault(value.lstrip("0") or "0", []).append(person)
+
+        matched, ambiguous, unmatched = [], [], []
+        for user in users:
+            serial = user["device_serial"]
+            pin = str(user["user_id"]).strip()
+            candidates = by_name.get(_norm(user.get("name")), [])
+            if not candidates:
+                candidates = by_number.get(pin.lstrip("0") or "0", [])
+            unique: dict[str, list[dict]] = {}
+            for person in candidates:
+                unique.setdefault(str(person["ems_student_id"]), []).append(person)
+            if len(unique) != 1:
+                (ambiguous if candidates else unmatched).append(
+                    {"device_serial": serial, "device_user_id": pin,
+                     "device_name": user.get("name"),
+                     "candidates": [p.get("name") for p in candidates][:6]
+                     if candidates else []})
+                continue
+            person = candidates[0]
+            if apply:
+                self.assign(device_serial=serial, device_user_id=pin,
+                            ems_student_id=str(person["ems_student_id"]),
+                            source="auto")
+            matched.append({"device_serial": serial, "device_user_id": pin,
+                            "ems_student_id": str(person["ems_student_id"]),
+                            "name": person.get("name")})
+        result = {"matched": matched, "ambiguous": ambiguous, "unmatched": unmatched,
+                  "applied": apply}
+        if apply and matched:
+            self.repos["audit"].log(
+                actor=self.actor, action="mapping.auto_map",
+                detail=f"{len(matched)} device users auto-bound, "
+                       f"{len(ambiguous)} ambiguous, {len(unmatched)} unmatched")
+        return result
 
     # ------------------------------------------------------------------ CSV ---
     def export_csv(self) -> str:

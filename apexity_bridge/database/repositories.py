@@ -22,6 +22,32 @@ def _row_to_dict(row) -> dict:
     return {k: row[k] for k in row.keys()}
 
 
+# Person types the EMS directory can contain. "student" is only one of them —
+# schools also punch in teachers and non-teaching staff, and the bridge must be
+# able to bind a device user to any of them.
+PERSON_TYPES = ("student", "teacher", "staff", "other")
+
+
+def ems_serial_for(device: dict) -> str:
+    """The serial number the EMS knows this terminal by.
+
+    ``devices.ems_serial`` (operator override) wins over the hardware serial.
+    iClock servers accept ATTLOG uploads only for a serial they have on file.
+    """
+    return (device.get("ems_serial") or device.get("serial_number") or "").strip()
+
+
+def person_label(person: dict | None) -> str:
+    """Human label used in lists/logs: 'Name (Class Section)' style."""
+    if not person:
+        return ""
+    name = person.get("name") or person.get("ems_student_id") or ""
+    bits = [str(b) for b in (person.get("class_name"), person.get("section")) if b]
+    if person.get("designation"):
+        bits = [str(person["designation"])]
+    return f"{name} ({' '.join(bits)})" if bits else str(name)
+
+
 # --------------------------------------------------------------------------
 class DeviceRepository:
     def __init__(self, db: Database):
@@ -166,6 +192,32 @@ class DeviceRepository:
         self.db.execute(
             "UPDATE devices SET label = ?, updated_at = ? WHERE id = ?",
             (label, iso_utc(), device_id),
+        )
+
+    # -- EMS identity -------------------------------------------------------
+    def set_ems_serial(self, device_id: int, ems_serial: str | None) -> None:
+        """Serial the EMS knows this device by ('' / None → use hardware serial).
+
+        iClock servers only accept ATTLOG uploads for a serial they have on
+        file, and that serial is not always the one the terminal reports. This
+        override is the supported way to make the two match.
+        """
+        value = (ems_serial or "").strip() or None
+        self.db.execute(
+            "UPDATE devices SET ems_serial = ?, updated_at = ? WHERE id = ?",
+            (value, iso_utc(), device_id),
+        )
+
+    def set_users_pushed_hash(self, device_id: int, value: str | None) -> None:
+        self.db.execute(
+            "UPDATE devices SET users_pushed_hash = ?, updated_at = ? WHERE id = ?",
+            (value, iso_utc(), device_id),
+        )
+
+    def set_users_last_read(self, device_id: int, when: str | None = None) -> None:
+        self.db.execute(
+            "UPDATE devices SET users_last_read_at = ?, updated_at = ? WHERE id = ?",
+            (when or iso_utc(), iso_utc(), device_id),
         )
 
     def count_events_for(self, device_id: int) -> int:
@@ -410,11 +462,23 @@ class EventRepository:
 
 # --------------------------------------------------------------------------
 class StudentRepository:
+    """The EMS *people* directory — students **and** teachers **and** staff.
+
+    The table is still called ``students_cache`` (renaming a shipped table is
+    riskier than it is worth); ``person_type`` carries the distinction and
+    every row from every EMS endpoint lands in the same cache, because a
+    fingerprint punch can belong to any of them.
+    """
+
     def __init__(self, db: Database):
         self.db = db
 
     def upsert_many(self, students: list[dict]) -> tuple[int, int]:
-        """Insert/update roster. Returns (inserted, updated)."""
+        """Insert/update people. Returns (inserted, updated).
+
+        ``person_type`` defaults to 'student' so an EMS that only exposes the
+        classic ``/students`` endpoint keeps working unchanged.
+        """
         if not students:
             return 0, 0
         now = iso_utc()
@@ -422,6 +486,9 @@ class StudentRepository:
         with self.db.transaction() as conn:
             for s in students:
                 raw = json.dumps(s, ensure_ascii=False, default=str)[:8000]
+                person_type = (s.get("person_type") or "student").strip().lower()
+                if person_type not in PERSON_TYPES:
+                    person_type = "other"
                 existing = conn.execute(
                     "SELECT id FROM students_cache WHERE ems_student_id = ?",
                     (str(s["ems_student_id"]),),
@@ -429,12 +496,15 @@ class StudentRepository:
                 if existing:
                     conn.execute(
                         """UPDATE students_cache SET admission_no=?, roll_no=?, name=?, class_name=?,
-                               section=?, active=?, raw_json=?, fetched_at=?, updated_at=?
+                               section=?, active=?, person_type=?, employee_no=?, designation=?,
+                               department=?, raw_json=?, fetched_at=?, updated_at=?
                            WHERE ems_student_id=?""",
                         (
                             s.get("admission_no"), s.get("roll_no"), s.get("name", ""),
                             s.get("class_name"), s.get("section"),
-                            1 if s.get("active", True) else 0, raw, now, now,
+                            1 if s.get("active", True) else 0, person_type,
+                            s.get("employee_no"), s.get("designation"), s.get("department"),
+                            raw, now, now,
                             str(s["ems_student_id"]),
                         ),
                     )
@@ -443,23 +513,42 @@ class StudentRepository:
                     conn.execute(
                         """INSERT INTO students_cache
                            (ems_student_id, admission_no, roll_no, name, class_name,
-                            section, active, raw_json, fetched_at, updated_at)
-                           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                            section, active, person_type, employee_no, designation,
+                            department, raw_json, fetched_at, updated_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             str(s["ems_student_id"]), s.get("admission_no"), s.get("roll_no"),
                             s.get("name", ""), s.get("class_name"), s.get("section"),
-                            1 if s.get("active", True) else 0, raw, now, now,
+                            1 if s.get("active", True) else 0, person_type,
+                            s.get("employee_no"), s.get("designation"), s.get("department"),
+                            raw, now, now,
                         ),
                     )
                     ins += 1
         return ins, upd
 
-    def count(self, active_only: bool = False) -> int:
+    def count(self, active_only: bool = False, person_type: str | None = None) -> int:
+        where, params = [], []
         if active_only:
-            row = self.db.query_one("SELECT COUNT(*) AS c FROM students_cache WHERE active = 1")
-        else:
-            row = self.db.query_one("SELECT COUNT(*) AS c FROM students_cache")
+            where.append("active = 1")
+        if person_type:
+            where.append("person_type = ?")
+            params.append(person_type)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        row = self.db.query_one(f"SELECT COUNT(*) AS c FROM students_cache {clause}", params)
         return int(row["c"])
+
+    def counts_by_type(self) -> dict:
+        rows = self.db.query(
+            "SELECT person_type, COUNT(*) AS c FROM students_cache GROUP BY person_type"
+        )
+        out = {t: 0 for t in PERSON_TYPES}
+        out["all"] = 0
+        for r in rows:
+            key = r["person_type"] or "other"
+            out[key] = out.get(key, 0) + int(r["c"])
+            out["all"] += int(r["c"])
+        return out
 
     def get(self, ems_student_id: str) -> dict | None:
         row = self.db.query_one(
@@ -469,23 +558,31 @@ class StudentRepository:
 
     def list(self, *, search: str | None = None, class_name: str | None = None,
              section: str | None = None, active: bool | None = None,
+             person_type: str | None = None,
              page: int = 1, page_size: int = 50,
              sort: str = "name", desc: bool = False) -> tuple[list[dict], int]:
         where, params = [], []
         if search:
-            where.append("(name LIKE ? OR admission_no LIKE ? OR roll_no LIKE ? OR ems_student_id LIKE ?)")
-            params += [f"%{search}%"] * 4
+            where.append(
+                "(name LIKE ? OR admission_no LIKE ? OR roll_no LIKE ? OR ems_student_id LIKE ? "
+                "OR employee_no LIKE ? OR designation LIKE ?)"
+            )
+            params += [f"%{search}%"] * 6
         if class_name:
             where.append("class_name = ?")
             params.append(class_name)
         if section:
             where.append("section = ?")
             params.append(section)
+        if person_type:
+            where.append("person_type = ?")
+            params.append(person_type)
         if active is not None:
             where.append("active = ?")
             params.append(1 if active else 0)
         clause = ("WHERE " + " AND ".join(where)) if where else ""
-        sortable = {"name", "class_name", "section", "admission_no", "roll_no", "updated_at"}
+        sortable = {"name", "class_name", "section", "admission_no", "roll_no",
+                    "updated_at", "person_type"}
         order = sort if sort in sortable else "name"
         direction = "DESC" if desc else "ASC"
         total = self.db.query_one(f"SELECT COUNT(*) AS c FROM students_cache {clause}", params)["c"]
@@ -512,6 +609,169 @@ class StudentRepository:
              "sections": sorted(s for s in (r["sections"] or "").split(",") if s)}
             for r in rows
         ]
+
+
+# --------------------------------------------------------------------------
+class DeviceUserRepository:
+    """Read-only local mirror of the user table enrolled on each terminal.
+
+    The bridge pulls this over the ZK protocol (``get_users``) and never
+    writes it back to the device. It exists so the dashboard can show
+    "who does this K40 actually know about", which is the only way an
+    administrator can bind a PIN to an EMS student/teacher/staff record —
+    without it, punches arrive with a bare PIN and the EMS cannot attribute
+    them to anybody.
+    """
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def replace_for(self, device_serial: str, users: list[dict]) -> dict:
+        """Replace the cached user list for one terminal. Returns a stats dict.
+
+        Users present on the device but gone from the cache are *removed* —
+        the device is the source of truth. Punches already collected are never
+        touched.
+        """
+        now = iso_utc()
+        wanted: dict[str, dict] = {}
+        for u in users:
+            user_id = str(u.get("user_id") or "").strip()
+            if user_id:
+                wanted[user_id] = u
+
+        inserted = updated = removed = 0
+        with self.db.transaction() as conn:
+            existing = {
+                r["user_id"]
+                for r in conn.execute(
+                    "SELECT user_id FROM device_users_cache WHERE device_serial = ?",
+                    (device_serial,),
+                ).fetchall()
+            }
+            stale = existing - set(wanted)
+            if stale:
+                marks = ",".join("?" * len(stale))
+                cur = conn.execute(
+                    f"""DELETE FROM device_users_cache
+                        WHERE device_serial = ? AND user_id IN ({marks})""",
+                    (device_serial, *stale),
+                )
+                removed = int(cur.rowcount or 0)
+            for user_id, u in wanted.items():
+                cur = conn.execute(
+                    """UPDATE device_users_cache
+                       SET name = COALESCE(?, name), privilege = COALESCE(?, privilege),
+                           card = COALESCE(?, card), last_seen_at = ?, updated_at = ?
+                       WHERE device_serial = ? AND user_id = ?""",
+                    (u.get("name"), u.get("privilege"), u.get("card"), now, now,
+                     device_serial, user_id),
+                )
+                if cur.rowcount:
+                    updated += 1
+                    continue
+                conn.execute(
+                    """INSERT INTO device_users_cache
+                       (device_serial, user_id, name, privilege, card,
+                        first_seen_at, last_seen_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (device_serial, user_id, u.get("name"), u.get("privilege"),
+                     u.get("card"), now, now, now),
+                )
+                inserted += 1
+        return {
+            "serial": device_serial,
+            "on_device": len(wanted),
+            "inserted": inserted,
+            "updated": updated,
+            "removed": removed,
+            "cached": self.count(device_serial),
+        }
+
+    def get(self, device_serial: str, user_id: str) -> dict | None:
+        row = self.db.query_one(
+            "SELECT * FROM device_users_cache WHERE device_serial = ? AND user_id = ?",
+            (device_serial, str(user_id)),
+        )
+        return _row_to_dict(row) if row else None
+
+    def count(self, device_serial: str | None = None) -> int:
+        if device_serial:
+            row = self.db.query_one(
+                "SELECT COUNT(*) AS c FROM device_users_cache WHERE device_serial = ?",
+                (device_serial,),
+            )
+        else:
+            row = self.db.query_one("SELECT COUNT(*) AS c FROM device_users_cache")
+        return int(row["c"])
+
+    def unmapped_count(self) -> int:
+        row = self.db.query_one(
+            """SELECT COUNT(*) AS c FROM device_users_cache du
+               LEFT JOIN device_user_mappings m
+                 ON m.device_serial = du.device_serial
+                AND m.device_user_id = du.user_id AND m.active = 1
+               WHERE m.id IS NULL"""
+        )
+        return int(row["c"])
+
+    def list(self, *, device_serial: str | None = None, search: str | None = None,
+             unmapped_only: bool = False, page: int = 1,
+             page_size: int = 200) -> tuple[list[dict], int]:
+        where, params = [], []
+        if device_serial:
+            where.append("du.device_serial = ?")
+            params.append(device_serial)
+        if search:
+            where.append(
+                "(du.user_id LIKE ? OR du.name LIKE ? OR du.device_serial LIKE ? "
+                "OR sc.name LIKE ?)"
+            )
+            params += [f"%{search}%"] * 4
+        if unmapped_only:
+            where.append("m.id IS NULL")
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        total = self.db.query_one(
+            f"""SELECT COUNT(*) AS c FROM device_users_cache du
+                LEFT JOIN device_user_mappings m
+                  ON m.device_serial = du.device_serial
+                 AND m.device_user_id = du.user_id AND m.active = 1
+                LEFT JOIN students_cache sc ON sc.ems_student_id = m.ems_student_id
+                {clause}""",
+            params,
+        )["c"]
+        rows = self.db.query(
+            f"""SELECT du.*, d.label AS device_label,
+                       m.id AS mapping_id, m.ems_student_id AS ems_person_id,
+                       sc.name AS person_name, sc.person_type, sc.class_name, sc.section,
+                       sc.designation, sc.department, sc.active AS person_active,
+                       (SELECT COUNT(*) FROM attendance_events ev
+                         WHERE ev.device_serial = du.device_serial
+                           AND ev.device_user_id = du.user_id) AS punch_count,
+                       (SELECT MAX(ev.event_timestamp) FROM attendance_events ev
+                         WHERE ev.device_serial = du.device_serial
+                           AND ev.device_user_id = du.user_id) AS last_punch_at
+                FROM device_users_cache du
+                LEFT JOIN devices d ON d.serial_number = du.device_serial
+                LEFT JOIN device_user_mappings m
+                  ON m.device_serial = du.device_serial
+                 AND m.device_user_id = du.user_id AND m.active = 1
+                LEFT JOIN students_cache sc ON sc.ems_student_id = m.ems_student_id
+                {clause}
+                ORDER BY CAST(du.user_id AS INTEGER), du.user_id
+                LIMIT ? OFFSET ?""",
+            (*params, page_size, max(0, (page - 1) * page_size)),
+        )
+        return [_row_to_dict(r) for r in rows], int(total)
+
+    def users_for_ems(self, device_serial: str) -> list[dict]:
+        """Payload for the EMS USER table (passwords are never included)."""
+        rows = self.db.query(
+            """SELECT user_id, name, privilege, card FROM device_users_cache
+               WHERE device_serial = ? ORDER BY CAST(user_id AS INTEGER), user_id""",
+            (device_serial,),
+        )
+        return [_row_to_dict(r) for r in rows]
 
 
 # --------------------------------------------------------------------------
@@ -751,6 +1011,8 @@ def open_migrated_database(path) -> tuple[Database, dict]:
         "devices": DeviceRepository(db),
         "events": EventRepository(db),
         "students": StudentRepository(db),
+        "people": StudentRepository(db),          # alias: students + teachers + staff
+        "device_users": DeviceUserRepository(db),
         "mappings": MappingRepository(db),
         "settings": SettingsRepository(db),
         "audit": AuditRepository(db),

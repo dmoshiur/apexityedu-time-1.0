@@ -35,6 +35,7 @@ import requests
 
 from .base import (
     EmsAuthError,
+    EmsError,
     EmsProtocolError,
     EmsUnavailableError,
     HealthResult,
@@ -42,11 +43,83 @@ from .base import (
     RosterPage,
     StudentInfo,
     UploadOutcome,
+    UserSyncOutcome,
 )
 
 log = logging.getLogger("apexity_bridge.ems.iclock")
 
 PUSH_VER = "2.4.2"
+
+# iClock/ADMS "table" names used by the bridge.
+TABLE_ATTLOG = "ATTLOG"
+TABLE_USER = "USER"
+TABLE_OPERLOG = "OPERLOG"
+
+# Commands an ADMS server may hand to a terminal through getrequest. Only
+# read-only DATA QUERY commands may ever be answered; everything else is
+# logged and refused — the bridge is a collector, not a remote control.
+READ_ONLY_COMMANDS = (
+    "DATA QUERY USERINFO",
+    "DATA QUERY ATTLOG",
+    "DATA QUERY OPERLOG",
+    "DATA QUERY BIODATA",     # answered with an empty body: no templates, ever
+    "DATA QUERY FINGERTMP",
+    "CHECK",
+    "INFO",
+    "OPTIONS",
+)
+REFUSED_COMMANDS = (
+    "REBOOT", "RESTART", "CLEAR", "DELETE", "SET", "ENROLL", "UPDATE",
+    "INIT", "SHELL", "EXEC", "FORMAT", "LOCK", "UNLOCK",
+)
+
+
+def parse_commands(text: str) -> list[str]:
+    """Extract ``C:<id>:<COMMAND>`` items from a getrequest reply.
+
+    Servers that answer a plain ``OK`` yield an empty list.
+    """
+    commands: list[str] = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.upper() == "OK":
+            continue
+        if line.upper().startswith("C:"):
+            line = line[2:]
+            line = line.split(":", 1)[1] if ":" in line else line
+        commands.append(line.strip())
+    return commands
+
+
+def command_verb(command: str) -> str:
+    """Upper-cased verb of an iClock command, e.g. 'DATA QUERY USERINFO'.
+
+    Accepts both the raw ``C:<id>:<COMMAND>`` form a server sends through
+    getrequest and an already-unwrapped command.
+    """
+    text = (command or "").strip().upper()
+    if text.startswith("C:") and ":" in text[2:]:
+        text = text[2:].split(":", 1)[1].strip()
+    for verb in ("DATA QUERY USERINFO", "DATA QUERY ATTLOG", "DATA QUERY OPERLOG",
+                 "DATA QUERY BIODATA", "DATA QUERY FINGERTMP"):
+        if text.startswith(verb):
+            return verb
+    return text
+
+
+def command_is_read_only(command: str) -> bool:
+    verb = command_verb(command)
+    if verb in READ_ONLY_COMMANDS:
+        return True
+    return not any(verb.startswith(bad) for bad in REFUSED_COMMANDS) and verb.startswith(
+        ("DATA QUERY", "CHECK", "INFO")
+    )
+
+
+def is_user_success(text: str | None) -> bool:
+    """Acceptance check for a ``table=USER`` upload."""
+    body = (text or "").lstrip("\ufeff").strip()
+    return bool(re.fullmatch(r"OK(?:\s*:\s*[0-9]+)?", body, re.IGNORECASE))
 
 
 def is_success_handshake(body: str | None) -> bool:
@@ -71,11 +144,18 @@ class IclockEmsClient:
     ATTLOG_FIELDS = 7  # PIN,time,status,verify,workcode,r1,r2
 
     def __init__(self, base_url: str, *, path: str = "/iclock", timeout: int = 15,
-                 auth_token: str | None = None, session: requests.Session | None = None):
+                 auth_token: str | None = None, session: requests.Session | None = None,
+                 roster_client=None):
         self.base_url = base_url.rstrip("/")
         self.path = "/" + path.strip("/")
         self.timeout = timeout
         self._auth_token = auth_token
+        # Optional REST side-channel used *only* to download the EMS people
+        # directory. iClock has no roster download, and a school that cannot
+        # attribute a PIN to a person cannot use attendance at all, so the
+        # bridge supports downloading the roster over REST while still pushing
+        # punches over iClock (see docs/EMS_API_CONTRACT.md § "Split mode").
+        self._roster_client = roster_client
         self._http = session or requests.Session()
         self._http.headers.update({"User-Agent": "ApexityEduBridge/1.0"})
         if auth_token:
@@ -164,19 +244,36 @@ class IclockEmsClient:
 
     # ---------------------------------------------------------------- roster --
     def fetch_students(self, cursor: str | None = None) -> RosterPage:
-        """iClock is device-oriented: roster pull is usually NOT available.
+        return self.fetch_people(cursor)
 
-        The bridge surfaces this honestly as an unsupported capability; the
-        SyncService logs a precise error pointing at docs/EMS_API_CONTRACT.md
-        (the EMS must implement the documented roster endpoint, or the REST
-        protocol must be used). We never invent students.
+    def fetch_people(self, cursor: str | None = None) -> RosterPage:
+        """Download the EMS directory (students + teachers + staff).
+
+        iClock is device-oriented and has no roster download of its own, so
+        this delegates to the optional REST side-channel (``/api/v1/bridge/
+        people``, falling back to ``/students``). When no side-channel is
+        configured the bridge reports the capability as missing instead of
+        inventing people.
         """
-        raise EmsProtocolError(
-            "the iClock protocol does not provide a student roster download. "
-            "The bridge cannot display EMS students until the EMS implements "
-            "GET /api/v1/bridge/students (see docs/EMS_API_CONTRACT.md) or the "
-            "EMS roster/OPERLOG endpoint is configured."
-        )
+        if self._roster_client is None:
+            raise EmsProtocolError(
+                "the iClock protocol cannot download a people roster, and no "
+                "REST roster endpoint is enabled (EMS_ROSTER_MODE=off). The EMS "
+                "must expose GET /api/v1/bridge/people — or the legacy "
+                "GET /api/v1/bridge/students — so the bridge can show students, "
+                "teachers and staff and bind them to device users "
+                "(docs/EMS_API_CONTRACT.md)."
+            )
+        try:
+            return self._roster_client.fetch_people(cursor)
+        except EmsProtocolError as exc:
+            raise EmsProtocolError(
+                f"the EMS people roster could not be downloaded: {exc}. iClock "
+                "has no roster download of its own, so the bridge needs "
+                "GET /api/v1/bridge/people (students + teachers + staff) — see "
+                "docs/EMS_API_CONTRACT.md, or set EMS_ROSTER_MODE=off to stop "
+                "checking."
+            ) from exc
 
     # --------------------------------------------------------------- upload --
     @staticmethod
@@ -188,17 +285,21 @@ class IclockEmsClient:
             [str(event["device_user_id"]), ts, str(status), str(verify), "0", "0", "0"]
         )
 
-    def push_attendance(self, events: list[dict]) -> UploadOutcome:
+    def push_attendance(self, events: list[dict], *, serial: str | None = None) -> UploadOutcome:
         if not events:
             return UploadOutcome()
-        # iClock pushes are per-device-serial — the worker already groups.
-        serial = events[0]["device_serial"]
-        for ev in events:
-            if ev["device_serial"] != serial:
-                raise EmsProtocolError("iClock push requires same-serial batching")
+        # iClock pushes are per-device-serial — the worker groups by the serial
+        # the EMS knows (devices.ems_serial when the operator set an override).
+        if serial:
+            serial = serial.strip()
+        else:
+            serial = events[0]["device_serial"]
+            for ev in events:
+                if ev["device_serial"] != serial:
+                    raise EmsProtocolError("iClock push requires same-serial batching")
 
         body = "\n".join(self.format_attlog_line(ev) for ev in events) + "\n"
-        url = self._endpoint("cdata", serial, table="ATTLOG",
+        url = self._endpoint("cdata", serial, table=TABLE_ATTLOG,
                              Stamp=int(time.time()))
         resp = self._request("POST", url, data=body.encode("utf-8"),
                              headers={"Content-Type": "text/plain"})
@@ -232,6 +333,86 @@ class IclockEmsClient:
             accepted_ids=tuple(accepted),
             partial_index=partial_index,
         )
+
+    # ------------------------------------------------------------ user table --
+    @staticmethod
+    def format_user_line(user: dict) -> str:
+        """One ``table=USER`` line, in the format ADMS servers parse.
+
+        ``USER PIN=<id>\\tName=<name>\\tPri=<privilege>\\tPasswd=\\tCard=<card>\\tGrp=1\\tTZ=…``
+
+        The device password is deliberately never sent: the bridge only needs
+        the EMS to learn which PIN belongs to which human.
+        """
+        name = (user.get("name") or f"User {user.get('user_id')}").strip()
+        name = name.replace("\t", " ").replace("\n", " ")[:60]
+        privilege = user.get("privilege")
+        try:
+            privilege = int(privilege) if privilege is not None else 0
+        except (TypeError, ValueError):
+            privilege = 0
+        card = str(user.get("card") or "")
+        return (
+            f"USER PIN={user.get('user_id')}\tName={name}\tPri={privilege}\t"
+            f"Passwd=\tCard={card}\tGrp=1\tTZ=0000000000000000"
+        )
+
+    def push_users(self, serial: str, users: list[dict]) -> UserSyncOutcome:
+        """Publish a terminal's enrolled users so the EMS can map PIN → person.
+
+        Without this, an iClock server receives attendance lines full of bare
+        PINs and has no way to attribute them to a student, teacher or staff
+        member. The upload is idempotent (the table replaces itself) and
+        contains no biometric templates or passwords.
+        """
+        if not users:
+            return UserSyncOutcome(accepted=0, detail="no users to push")
+        body = "\n".join(self.format_user_line(u) for u in users) + "\n"
+        url = self._endpoint("cdata", serial, table=TABLE_USER, Stamp=int(time.time()))
+        resp = self._request("POST", url, data=body.encode("utf-8"),
+                             headers={"Content-Type": "text/plain"})
+        text = self._expect_ok_text(resp)
+        if not is_user_success(text):
+            return UserSyncOutcome(
+                fatal=(
+                    f"EMS refused the USER table for SN {serial}: expected OK or "
+                    f"OK: <count>; HTTP {resp.status_code}, "
+                    f"reply={self._safe_detail(text)[:200]!r}"
+                )
+            )
+        match = re.search(r"([0-9]+)", text)
+        accepted = int(match.group(1)) if match else len(users)
+        return UserSyncOutcome(accepted=min(accepted, len(users)),
+                               detail=f"USER table accepted: {self._safe_detail(text)[:80]!r}")
+
+    # ------------------------------------------------------------- diagnostics --
+    def probe_attlog_path(self, serial: str) -> dict:
+        """POST an EMPTY ATTLOG body and report the server's exact answer.
+
+        Sending no records proves whether the server's ingestion route exists
+        and accepts this serial, without writing a single fake punch into the
+        school's attendance register. This is how "it says everything is OK but
+        nothing arrives" gets disproved or confirmed in one step.
+        """
+        url = self._endpoint("cdata", serial, table=TABLE_ATTLOG, Stamp=int(time.time()))
+        try:
+            resp = self._request("POST", url, data=b"",
+                                 headers={"Content-Type": "text/plain"})
+        except EmsError as exc:
+            return {"serial": serial, "ok": False, "error": str(exc)[:300],
+                    "reply": None, "status": None}
+        text = self._expect_ok_text(resp)
+        ok = bool(re.fullmatch(r"OK(?:\s*:\s*[0-9]+)?", text, re.IGNORECASE))
+        return {
+            "serial": serial, "ok": ok, "status": resp.status_code,
+            "reply": self._safe_detail(text)[:300],
+            "url": self._safe_detail(url),
+            "note": ("empty ATTLOG accepted — this serial can receive punches"
+                     if ok else
+                     "server did not answer OK to an empty ATTLOG upload; check that "
+                     "this serial is registered in the EMS and that POST (not GET) "
+                     "is accepted on the cdata route"),
+        }
 
     # --------------------------------------------------------------- polling --
     def poll_commands(self, serial: str) -> list[str]:

@@ -47,6 +47,47 @@ Check **Logs** for collect errors; run **Devices → Test**.
 
 ## EMS / sync problems
 
+### "Everything says OK, but nothing reaches ApexityEdu"  ← start here
+
+A green *EMS ONLINE* badge only means **the server answered a handshake**.
+Every iClock/ADMS server answers a handshake for a serial it has never heard
+of — that is how real terminals fetch their configuration before they are
+registered — so a handshake proves nothing about ingestion. The bridge
+therefore keeps a separate, honest signal: **Ingestion verified**, which flips
+only after the server explicitly acknowledged an ATTLOG upload.
+
+Run the one command that settles it, on the school PC:
+
+```powershell
+.\.venv\Scripts\python.exe -m apexity_bridge verify-ems
+```
+
+It performs, per registered device: handshake → presence poll → **an ATTLOG
+POST with an empty body** (no fake punch is ever written into the school
+register) → the USER table post, and prints the server's exact reply for each
+step. Then work through the results in this order:
+
+| What `verify-ems` shows | Cause | Fix |
+|---|---|---|
+| `attlog_route: FAIL` + `reply: HTML / JSON / empty` | the EMS does not accept `POST` on the cdata route (a `GET` with `table=ATTLOG` returning the handshake block is the classic symptom) | server-side: accept `POST …/iclock/cdata?SN=…&table=ATTLOG` and answer `OK: <n>` (`docs/EMS_API_CONTRACT.md` § Option A) |
+| `attlog_route: FAIL` + `403`/`401` | the serial the bridge pushes is not the one registered in ApexityEdu → Biometric Devices | on **Devices → EMS serial…** enter the serial ApexityEdu shows, then re-run `verify-ems` |
+| `attlog_route: OK` but ApexityEdu shows nobody | the punch has a bare PIN and the EMS cannot resolve it | publish the user table: **Device Users → Read from device → Publish to ApexityEdu**; server-side accept `table=USER` (Option D) |
+| everything OK, but the People page is empty | the EMS exposes no directory endpoint | server-side: `GET /api/v1/bridge/people` (students + teachers + staff), or the legacy `/students` |
+| `handshake: FAIL` | network/DNS/TLS | check that the PC can reach `https://apexityedu.com` at all |
+
+Other checks that matter:
+
+* **Attendance** page: rows stuck in `failed`/`review` carry the server's own
+  error text in *Last error*.
+* **Overview → Recent sync attempts** shows `attempt_type=push_users` once the
+  user tables are being published.
+* **Device Users** page: anything marked *NOT MAPPED* will reach ApexityEdu
+  without a person. Bind it there — **Auto-map matches** resolves every PIN
+  whose name matches exactly one person in the EMS directory, or whose PIN
+  equals a roll/admission/employee number. Ambiguous names are listed for you
+  instead of being guessed. The CSV import on the **People** page does the same
+  in bulk.
+
 ### EMS permanently OFFLINE
 1. **Settings → Test EMS connection** runs the full probe (iClock + REST).
 2. If `iClock endpoint: no` and `REST bridge API: no` — the EMS has no
@@ -94,11 +135,27 @@ these historical rows. Do not delete the database or clear the K40 logs.
   fixing the cause (bad timestamp, EMS-side rejection reason shown in the row).
 - The **Logs** page shows the per-batch error the EMS returned.
 
-### Students page says the roster API is missing
-The EMS doesn't implement `GET /api/v1/bridge/students` yet. Attendance keeps
-working; mapping requires the roster. Options: implement the documented
-endpoint (`docs/EMS_API_CONTRACT.md`) or select `EMS_PROTOCOL=rest` once the
-EMS team ships it. The bridge will never invent student data.
+### People page says the roster API is missing
+The EMS doesn't implement `GET /api/v1/bridge/people` (or the legacy
+`/students`) yet. Attendance keeps working; only *mapping* needs the roster.
+The directory holds **students, teachers and staff** — everyone who punches.
+Options: implement the documented endpoint (`docs/EMS_API_CONTRACT.md` §
+Option C), or set `EMS_ROSTER_MODE=off` to silence the check. The bridge will
+never invent people.
+
+If the page shows students but no teachers/staff, the EMS endpoint is the
+legacy `/students` shape: it should return `person_type` per row
+(`student` | `teacher` | `staff`) so the school can bind a teacher's PIN too.
+
+### The EMS never receives device users
+1. **Device Users → Read from device** — the cache must be filled first (the
+   bridge mirrors the terminal's user table every `USERS_SYNC_INTERVAL`
+   seconds, default 900).
+2. **Device Users → Publish to ApexityEdu** forces an immediate push.
+3. Server-side, ApexityEdu must accept `POST …/iclock/cdata?SN=…&table=USER`
+   (iClock) or `POST /api/v1/bridge/devices/users` (REST) — see
+   `docs/EMS_API_CONTRACT.md` § Option D. Without it, punches arrive as bare
+   PINs and cannot be attributed to anybody.
 
 ---
 

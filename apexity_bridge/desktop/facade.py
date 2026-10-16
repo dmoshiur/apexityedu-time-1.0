@@ -83,6 +83,11 @@ class DesktopFacade:
                 "total": repos["students"].count(),
                 "active": repos["students"].count(active_only=True),
                 "mappings": repos["mappings"].count(),
+                "by_type": repos["students"].counts_by_type(),
+            },
+            "device_users": {
+                "total": repos["device_users"].count(),
+                "unmapped": repos["device_users"].unmapped_count(),
             },
             "events": events,
             "queue_pending": repos["queue"].pending_count(),
@@ -196,17 +201,91 @@ class DesktopFacade:
 
     # ------------------------------------------------------------- students --
     def students(self, *, search=None, class_name=None, section=None,
-                 active=None, page=1, page_size=50) -> dict:
+                 active=None, person_type=None, page=1, page_size=50) -> dict:
+        """The EMS directory: students **and** teachers **and** staff."""
         rows, total = self.ctx.repos["students"].list(
             search=search, class_name=class_name, section=section,
-            active=active, page=page, page_size=page_size, sort="name", desc=False,
+            person_type=person_type, active=active, page=page, page_size=page_size,
+            sort="name", desc=False,
         )
         return {
-            "students": rows, "total": total, "page": page, "page_size": page_size,
+            "students": rows, "people": rows, "total": total, "page": page,
+            "page_size": page_size,
             "classes": self.ctx.repos["students"].classes(),
+            "by_type": self.ctx.repos["students"].counts_by_type(),
             "roster_last_sync": self.ctx.repos["settings"].get("roster_last_sync"),
             "roster_last_error": self.ctx.repos["settings"].get("roster_last_error"),
         }
+
+    # --------------------------------------------------------- device users --
+    def device_users(self, *, device_serial=None, search=None,
+                     unmapped_only=False, page=1, page_size=200) -> dict:
+        rows, total = self.ctx.repos["device_users"].list(
+            device_serial=device_serial, search=search,
+            unmapped_only=unmapped_only, page=page, page_size=page_size,
+        )
+        return {
+            "device_users": rows, "total": total, "page": page,
+            "page_size": page_size,
+            "unmapped": self.ctx.repos["device_users"].unmapped_count(),
+            "devices": self.ctx.repos["devices"].list_active(),
+        }
+
+    def read_device_users(self, device_id: int) -> dict:
+        """Read one terminal's user table now (read-only on the device)."""
+        if self.ctx.collector is None:
+            raise FacadeError("collector is not running")
+        try:
+            result = self.ctx.collector.refresh_users(device_id)
+        except ValueError as exc:
+            raise FacadeError(str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - device dependent
+            raise FacadeError(f"could not read the device user table: {exc}") from exc
+        self.ctx.repos["audit"].log(actor=self.actor, action="device_users.read",
+                                    detail=str(result)[:300])
+        return result
+
+    def push_device_users(self, device_id: int | None = None) -> dict:
+        if self.ctx.sync_worker is None:
+            raise FacadeError("sync worker is not running")
+        if device_id:
+            device = self.ctx.repos["devices"].get_by_id(device_id)
+            if not device:
+                raise FacadeError("device not found")
+            self.ctx.repos["devices"].set_users_pushed_hash(device_id, None)
+        else:
+            for device in self.ctx.repos["devices"].list_active():
+                self.ctx.repos["devices"].set_users_pushed_hash(device["id"], None)
+        self.ctx.repos["audit"].log(actor=self.actor,
+                                    action="device_users.push_requested")
+        self.ctx.sync_worker._next_users = 0.0
+        self.ctx.sync_worker.wake()
+        return {"queued": True}
+
+    def set_ems_serial(self, device_id: int, value: str) -> dict:
+        device = self.ctx.repos["devices"].get_by_id(device_id)
+        if not device:
+            raise FacadeError("device not found")
+        self.ctx.repos["devices"].set_ems_serial(device_id, value)
+        self.ctx.repos["devices"].set_users_pushed_hash(device_id, None)
+        self.ctx.repos["audit"].log(
+            actor=self.actor, action="device.ems_serial",
+            entity="device", entity_id=str(device.get("serial_number")),
+            detail=f"EMS serial → {(value or '').strip() or '(hardware serial)'}")
+        if self.ctx.sync_worker:
+            self.ctx.sync_worker.rebuild_client()
+        return self.ctx.repos["devices"].get_by_id(device_id) or {}
+
+    def ems_verify(self, sn: str | None = None) -> dict:
+        """Live proof of what the EMS accepts (handshake is not proof)."""
+        from ..ems.verify import format_report, verify_ems_ingestion
+        if self.ctx.ems_client is None:
+            raise FacadeError("no EMS client is configured")
+        report = verify_ems_ingestion(self.ctx, (sn or "").strip() or None)
+        report["text"] = format_report(report)
+        self.ctx.repos["audit"].log(actor=self.actor, action="ems.verify",
+                                    detail=str(report.get("verdict"))[:400])
+        return report
 
     def refresh_roster(self) -> dict:
         from ..students.directory import refresh_roster
@@ -228,6 +307,14 @@ class DesktopFacade:
                 device_serial=device_serial, device_user_id=device_user_id,
                 ems_student_id=ems_student_id,
             )
+        except MappingError as exc:
+            raise FacadeError(str(exc)) from exc
+
+    def auto_map(self, device_serial: str | None = None, apply: bool = True) -> dict:
+        """Bind device users to people automatically where the match is exact."""
+        try:
+            return self.mapping().auto_map(device_serial=device_serial or None,
+                                           apply=apply)
         except MappingError as exc:
             raise FacadeError(str(exc)) from exc
 
@@ -328,6 +415,10 @@ class DesktopFacade:
                                     detail="EMS device token updated")
         if self.ctx.sync_worker:
             self.ctx.sync_worker.rebuild_client()
+            # A token can unlock the REST people directory, so clear the
+            # "roster unsupported" flag and let the worker try again.
+            self.ctx.sync_worker.status.update(roster_supported=True, roster_error=None)
+            self.ctx.sync_worker._next_roster = 0.0
             self.ctx.sync_worker.wake()
         return True
 
