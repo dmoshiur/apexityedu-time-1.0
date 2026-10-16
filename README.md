@@ -15,11 +15,11 @@ without depending on ZKTime 5.0.
 - **Student directory + mapping UI** driven by the real EMS roster
   (`device user → EMS student`), with conflict detection and validated CSV
   bulk import/export.
-- **Local dashboard** (`http://127.0.0.1:8321`): overview, devices, students,
-  attendance, logs, settings — authenticated, CSRF-protected, localhost-only
-  by default.
-- **Windows auto-start** via Task Scheduler with restart-on-failure,
-  single-instance guard, and a one-command installer/uninstaller.
+- **Native Windows desktop app** (no browser): Overview, Devices, Students,
+  Attendance, Logs, Settings — sharp 90° cards, system tray, same process as
+  the background service.
+- **Always-on background service** with Task Scheduler auto-start at boot:
+  reconnects K40s and resumes the offline sync queue after a PC restart.
 
 > **Honest status.** The bridge software is complete and covered by 127
 > automated tests. A branded Windows installer produces `ApexityEduBridge.exe`
@@ -43,9 +43,11 @@ without depending on ZKTime 5.0.
    `C:\Program Files\ApexityEdu\Attendance Bridge\`, creates a **Start Menu**
    and **Desktop** shortcut with the ApexityEdu logo, and optionally starts
    at sign-in.
-3. Launch **ApexityEdu Bridge**. A tray icon appears and the dashboard opens
-   at **http://127.0.0.1:8321**. The first run is a setup wizard (password +
-   optional EMS token).
+3. Launch **ApexityEdu Bridge**. A native desktop window opens (not a
+   browser) and a tray icon stays in the background. First run is a setup
+   wizard (password + optional EMS token). Closing the window hides it —
+   the bridge keeps collecting. Exit from the tray to stop. After a PC
+   restart the app auto-starts hidden, reconnects devices, and resumes sync.
 
 Developer / source install (Python 3.10+ still required):
 

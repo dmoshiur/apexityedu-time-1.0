@@ -72,7 +72,6 @@ Source: "{#BrandingDir}\..\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppShort}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Open ApexityEdu Attendance Bridge"
-Name: "{group}\Open Dashboard"; Filename: "http://127.0.0.1:8321/"; Comment: "Local ApexityEdu Bridge dashboard"
 Name: "{group}\Uninstall {#MyAppShort}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppShort}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; Comment: "ApexityEdu Smart Attendance Bridge"
 

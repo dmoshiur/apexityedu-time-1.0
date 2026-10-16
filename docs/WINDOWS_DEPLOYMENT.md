@@ -19,9 +19,11 @@ C:\ProgramData\ApexityEduBridge\                 ← data
 ```
 
 The installer registers Add/Remove Programs, Start Menu and Desktop shortcuts
-(with the app logo), a tray icon, and optional sign-in auto-start. First launch
-opens **http://127.0.0.1:8321** on a first-run wizard (dashboard password +
-optional EMS token). Uninstall from Settings → Apps, or Start Menu → Uninstall.
+(with the app logo), a native desktop window, a tray icon, and optional
+sign-in auto-start. First launch opens the **desktop app** (not a browser)
+on a first-run wizard. Closing the window hides it to the tray — the
+background service keeps collecting and will auto-start + reconnect devices
+after a PC reboot. Uninstall from Settings → Apps, or Start Menu → Uninstall.
 
 ## Alternative: source install (Python 3.10+)
 

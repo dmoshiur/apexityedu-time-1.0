@@ -4,7 +4,7 @@
 
 Commands
     run                  start the full bridge service (default on source)
-    tray                 start with a Windows system-tray icon (default .exe)
+    tray                 start native desktop app + tray (default .exe)
     init-db              initialise/migrate the SQLite database
     scan                 connectivity-proof tool: discover/identify terminals
                          and optionally READ attendance (never writes to devices)
@@ -64,9 +64,9 @@ def main(argv: list[str] | None = None) -> int:
     run_p = sub.add_parser("run", help="start the bridge service (default)")
     run_p.add_argument("--no-dashboard", action="store_true", help="run headless")
 
-    tray_p = sub.add_parser("tray", help="start with a Windows system-tray icon")
+    tray_p = sub.add_parser("tray", help="start the native desktop app + tray")
     tray_p.add_argument("--hidden", action="store_true",
-                        help="do not open the browser (used by auto-start)")
+                        help="background only — no window (used by auto-start)")
 
     sub.add_parser("init-db", help="create/migrate the SQLite database and exit")
 
@@ -124,9 +124,11 @@ def _cmd_run(config, args) -> int:
             except KeyboardInterrupt:
                 service.stop()
     except RuntimeError:
-        from .tray import open_dashboard
-        open_dashboard(config)
-        print("ApexityEdu Bridge is already running — opened the dashboard.")
+        from .desktop.ipc import notify_running_instance
+        if notify_running_instance():
+            print("ApexityEdu Bridge is already running — brought the window to the front.")
+        else:
+            print("ApexityEdu Bridge is already running.")
         return 0
     return 0
 

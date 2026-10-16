@@ -40,11 +40,19 @@ hiddenimports = [
     "apexity_bridge",
     "apexity_bridge.__main__",
     "apexity_bridge.tray",
+    "apexity_bridge.desktop",
+    "apexity_bridge.desktop.gui",
+    "apexity_bridge.desktop.facade",
     "apexity_bridge.dashboard.app",
     "apexity_bridge.windows_service.control",
+    "PySide6",
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
+    "shiboken6",
 ]
 
-for pkg in ("apexity_bridge", "flask", "waitress", "zk", "keyring", "pystray"):
+for pkg in ("apexity_bridge", "flask", "waitress", "zk", "keyring", "pystray", "PySide6"):
     try:
         extra_datas, extra_binaries, extra_hidden = collect_all(pkg)
         datas += extra_datas
@@ -65,7 +73,9 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["pytest", "tkinter"],
+    excludes=["pytest", "tkinter", "PySide6.QtWebEngine", "PySide6.QtWebEngineCore",
+              "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore", "PySide6.QtQuick",
+              "PySide6.QtQml", "PySide6.QtMultimedia"],
     noarchive=False,
 )
 

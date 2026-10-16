@@ -9,7 +9,7 @@ on the `.exe`, the Start Menu, and the Desktop shortcut.
 | File | What it is |
 |---|---|
 | `ApexityEduBridge-Setup-1.0.0.exe` | Inno Setup installer (Add/Remove Programs, shortcuts, auto-start, uninstaller) |
-| `ApexityEduBridge.exe` | The frozen application (system tray + local dashboard at http://127.0.0.1:8321) |
+| `ApexityEduBridge.exe` | Native desktop application (system tray + PySide window, no browser) |
 
 After install:
 

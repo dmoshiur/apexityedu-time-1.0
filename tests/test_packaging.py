@@ -143,3 +143,40 @@ def test_branded_login_and_base_pages(ctx):
     assert overview.status_code == 200
     assert b"logo.png" in overview.data
     assert b"favicon.ico" in overview.data
+
+
+def test_desktop_facade_overview_and_setup(ctx):
+    from apexity_bridge.desktop.facade import DesktopFacade, FacadeError
+
+    api = DesktopFacade(ctx)
+    assert api.needs_setup() is True
+    data = api.overview()
+    assert "service" in data and "devices" in data and "events" in data
+    assert data["devices"]["online_now"] == 0
+
+    api.initial_setup("admin", "school-pass-99", token="tok-desktop")
+    assert api.needs_setup() is False
+    assert api.check_login("admin", "school-pass-99") is True
+    assert api.check_login("admin", "wrong-password") is False
+    assert ctx.secret_store.get_ems_token() == "tok-desktop"
+
+    try:
+        api.change_password("nope-nope", "newer-pass-1", "newer-pass-1")
+        raise AssertionError("should have failed")
+    except FacadeError:
+        pass
+    api.change_password("school-pass-99", "newer-pass-1", "newer-pass-1")
+    assert api.check_login("admin", "newer-pass-1") is True
+
+
+def test_desktop_ipc_notify_when_nothing_listens():
+    from apexity_bridge.desktop.ipc import notify_running_instance
+    assert notify_running_instance() is False
+
+
+def test_tray_module_does_not_open_a_browser():
+    import apexity_bridge.tray as tray
+    assert not hasattr(tray, "open_dashboard")
+    source = Path(tray.__file__).read_text(encoding="utf-8")
+    assert "webbrowser" not in source
+    assert "start_dashboard=False" in source
