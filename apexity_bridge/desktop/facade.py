@@ -246,21 +246,104 @@ class DesktopFacade:
         return result
 
     def push_device_users(self, device_id: int | None = None) -> dict:
-        if self.ctx.sync_worker is None:
-            raise FacadeError("sync worker is not running")
-        if device_id:
-            device = self.ctx.repos["devices"].get_by_id(device_id)
-            if not device:
-                raise FacadeError("device not found")
-            self.ctx.repos["devices"].set_users_pushed_hash(device_id, None)
-        else:
-            for device in self.ctx.repos["devices"].list_active():
-                self.ctx.repos["devices"].set_users_pushed_hash(device["id"], None)
+        """Publish the terminal user tables to ApexityEdu **now**.
+
+        This used to only nudge the background worker ("queued"), which is
+        why a manual push appeared to do nothing when the EMS was not
+        marked online. The push now happens immediately and the result says
+        exactly what the server answered.
+        """
+        from ..ems.push import PushError, format_push_result, push_device_users
         self.ctx.repos["audit"].log(actor=self.actor,
                                     action="device_users.push_requested")
-        self.ctx.sync_worker._next_users = 0.0
-        self.ctx.sync_worker.wake()
-        return {"queued": True}
+        try:
+            result = push_device_users(self.ctx, device_id=device_id, force=True,
+                                       actor=self.actor)
+        except PushError as exc:
+            raise FacadeError(str(exc)) from exc
+        result["text"] = format_push_result(result)
+        return result
+
+    def push_people(self, *, person_types: list[str] | None = None,
+                    ems_student_id: str | None = None) -> dict:
+        """Push the people directory (students/teachers/staff) to the EMS."""
+        from ..ems.push import PushError, push_people
+        self.ctx.repos["audit"].log(actor=self.actor, action="people.push_requested")
+        try:
+            return push_people(self.ctx, person_types=person_types,
+                                ems_student_id=ems_student_id)
+        except PushError as exc:
+            raise FacadeError(str(exc)) from exc
+
+    def create_person(self, person: dict) -> dict:
+        """Create/update one person (student, teacher or staff) in the EMS."""
+        from ..ems.push import PushError, create_person
+        self.ctx.repos["audit"].log(actor=self.actor, action="people.create_requested",
+                                    entity="person",
+                                    entity_id=str(person.get("id")
+                                                  or person.get("ems_student_id") or ""))
+        try:
+            return create_person(self.ctx, person)
+        except PushError as exc:
+            raise FacadeError(str(exc)) from exc
+
+    def sync_now(self) -> dict:
+        """One full manual sync: roster → device users → attendance."""
+        from ..ems.push import PushError, push_attendance_now
+        from ..students.directory import refresh_people
+        from ..ems.base import EmsError
+
+        report: dict = {"roster": None, "users": None, "attendance": None,
+                        "errors": []}
+        if self.ctx.ems_client is None:
+            raise FacadeError(
+                "no EMS client is configured — check EMS_BASE_URL and EMS_PROTOCOL "
+                "in Settings")
+        try:
+            report["roster"] = refresh_people(self.ctx.ems_client, self.ctx.repos)
+        except EmsError as exc:
+            report["errors"].append(f"roster: {exc}")
+        except Exception as exc:  # pragma: no cover - defensive
+            report["errors"].append(f"roster: {exc}")
+        try:
+            report["users"] = self.push_device_users()
+        except (FacadeError, PushError) as exc:
+            report["errors"].append(f"device users: {exc}")
+        try:
+            report["attendance"] = push_attendance_now(self.ctx)
+        except (FacadeError, PushError) as exc:
+            report["errors"].append(f"attendance: {exc}")
+        report["ok"] = not report["errors"]
+        self.ctx.repos["audit"].log(actor=self.actor, action="sync.manual",
+                                    detail="; ".join(report["errors"])[:400]
+                                    or "roster + users + attendance")
+        return report
+
+    # ----------------------------------------------------------- scheduler --
+    def scheduler_overview(self) -> dict:
+        from ..windows_service.control import scheduler_overview
+        return scheduler_overview(self.ctx.config)
+
+    def scheduler_action(self, action: str) -> dict:
+        """Install/start/stop the Windows Task Scheduler entries."""
+        from ..windows_service.control import (
+            install_sync_task, install_task, start_task, stop_task,
+            uninstall_sync_task, uninstall_task,
+        )
+        actions = {
+            "install": lambda: install_task(self.ctx.config),
+            "uninstall": lambda: uninstall_task(),
+            "start": lambda: start_task(),
+            "stop": lambda: stop_task(),
+            "install-sync": lambda: install_sync_task(self.ctx.config),
+            "uninstall-sync": lambda: uninstall_sync_task(),
+        }
+        if action not in actions:
+            raise FacadeError(f"unknown scheduler action {action!r}")
+        code, message = actions[action]()
+        self.ctx.repos["audit"].log(actor=self.actor, action=f"scheduler.{action}",
+                                    detail=message[:400])
+        return {"ok": code == 0, "code": code, "message": message}
 
     def set_ems_serial(self, device_id: int, value: str) -> dict:
         device = self.ctx.repos["devices"].get_by_id(device_id)

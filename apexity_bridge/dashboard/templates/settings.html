@@ -57,6 +57,16 @@
       <div id="backup-status" class="muted"></div>
     </div>
     <div class="card">
+      <h3>Manual sync</h3>
+      <p class="muted">Push the people directory, the terminal user tables and the
+        pending attendance to ApexityEdu right now — the same thing the
+        scheduled task does every 15 minutes.</p>
+      <div class="toolbar column">
+        <button id="btn-sync-now" class="primary">⟳ Sync now</button>
+      </div>
+      <div id="sync-now-status" class="muted"></div>
+    </div>
+    <div class="card">
       <h3>Security notes</h3>
       <ul class="notes">
         <li>Dashboard binds to <code>127.0.0.1</code>; LAN exposure requires an explicit env opt-in.</li>

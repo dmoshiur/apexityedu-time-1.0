@@ -15,6 +15,11 @@ without depending on ZKTime 5.0.
 - **Device users** — the bridge mirrors each K40's enrolled user table
   (PIN + name, read-only) and publishes it to the EMS, so a punch stops being
   an anonymous PIN and becomes a named person.
+- **Manual push buttons that report the truth** — *Push users to EMS*,
+  *Push people to ApexityEdu* and *Add person to ApexityEdu…* perform the
+  upload **now** and show the server's exact answer (accepted count,
+  refusal, or the endpoint the server still lacks) instead of quietly
+  queueing work that may never run.
 - **People directory + mapping UI** driven by the real EMS roster —
   **students, teachers and staff**, not students alone
   (`device user → EMS person`), with one-click **auto-mapping** (exact
@@ -31,8 +36,11 @@ without depending on ZKTime 5.0.
   process as the background service.
 - **Always-on background service** with Task Scheduler auto-start at boot:
   reconnects K40s and resumes the offline sync queue after a PC restart.
+  A second, optional scheduled task (`ApexityEduBridge-Sync`) runs a full
+  sync every 15 minutes, so the data still reaches ApexityEdu when the
+  app is closed between shifts.
 
-> **Honest status.** The bridge software is complete and covered by 209
+> **Honest status.** The bridge software is complete and covered by 230
 > automated tests. A branded Windows installer produces `ApexityEduBridge.exe`
 > with the product logo (Start Menu, Desktop, tray). Verified against the live
 > server on 2026-10-16: `apexityedu.com` **already speaks ZKTeco
@@ -83,8 +91,15 @@ Full guide: [`docs/WINDOWS_DEPLOYMENT.md`](docs/WINDOWS_DEPLOYMENT.md).
 .\.venv\Scripts\python.exe -m apexity_bridge scan                      # discovery + identification (read-only)
 .\.venv\Scripts\python.exe -m apexity_bridge scan --ip 192.168.0.201 --read-attendance 5
 .\.venv\Scripts\python.exe -m apexity_bridge set-token                 # EMS token → Credential Manager
+.\.venv\Scripts\python.exe -m apexity_bridge push-users                # publish the terminal user tables NOW
+.\.venv\Scripts\python.exe -m apexity_bridge push-people               # publish students/teachers/staff NOW
+.\.venv\Scripts\python.exe -m apexity_bridge sync-now                  # one-shot sync (roster + users + attendance)
+.\.venv\Scripts\python.exe -m apexity_bridge service install-sync      # scheduled sync every 15 min
 .\.venv\Scripts\python.exe -m apexity_bridge backup                    # consistent SQLite backup
 ```
+
+See [`docs/PUSH_AND_SCHEDULER.md`](docs/PUSH_AND_SCHEDULER.md) for the
+manual push buttons, the people-write contract and the scheduler setup.
 
 ## Configuration
 
@@ -99,7 +114,7 @@ Manager, the dashboard password is stored as a PBKDF2 hash.
 
 ```bash
 python3 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
-./scripts/run_tests.sh                     # 209 automated tests
+./scripts/run_tests.sh                     # 230 automated tests
 ./scripts/dev_run.sh                       # run the bridge in the foreground
 ```
 

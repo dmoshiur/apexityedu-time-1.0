@@ -13,7 +13,6 @@ Guarantees (see docs/ARCHITECTURE.md):
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import threading
@@ -354,68 +353,53 @@ class SyncWorker:
         self._sync_device_users()
 
     def _sync_device_users(self) -> dict:
-        """Push each terminal's cached user table. Returns a per-device summary."""
+        """Push each terminal's cached user table. Returns a per-device summary.
+
+        The periodic path only republishes a table when it actually changed
+        (``force=False``); the manual button in the desktop app calls
+        :meth:`push_device_users_now` with ``force=True`` instead.
+        """
         push_users = getattr(self._client, "push_users", None)
         if push_users is None:
             return {"skipped": "this EMS protocol cannot receive a user table"}
         if not bool(getattr(self.ctx.settings, "ems_push_users", True)):
             return {"skipped": "user sync disabled (EMS_PUSH_USERS=0)"}
 
-        repos = self.ctx.repos
-        summary: dict[str, dict] = {}
-        for device in repos["devices"].list_active():
-            serial = device.get("serial_number")
-            if not serial:
-                continue
-            users = repos["device_users"].users_for_ems(serial)
-            if not users:
-                summary[serial] = {"users": 0, "state": "no users read yet"}
-                continue
-            digest = hashlib.sha256(
-                "\n".join(f"{u['user_id']}|{u['name'] or ''}|{u['privilege']}"
-                           for u in users).encode("utf-8")
-            ).hexdigest()
-            target = ems_serial_for(device)
-            if digest == (device.get("users_pushed_hash") or ""):
-                summary[serial] = {"users": len(users), "state": "unchanged"}
-                continue
-            try:
-                outcome = push_users(target, users)
-            except EmsAuthError as exc:
-                self.status.update(users_last_error=str(exc)[:300])
-                repos["queue"].record_attempt(attempt_type="push_users",
-                                              event_count=len(users), result="failed",
-                                              error="auth: token rejected")
-                summary[serial] = {"users": len(users), "state": f"auth error: {exc}"[:200]}
-                continue
-            except (EmsUnavailableError, EmsError) as exc:
-                self.status.update(users_last_error=str(exc)[:300])
-                repos["queue"].record_attempt(attempt_type="push_users",
-                                              event_count=len(users), result="failed",
-                                              error=str(exc)[:300])
-                summary[serial] = {"users": len(users), "state": str(exc)[:200]}
-                continue
-            if outcome.fatal:
-                self.status.update(users_last_error=outcome.fatal[:300])
-                repos["queue"].record_attempt(attempt_type="push_users",
-                                              event_count=len(users), result="failed",
-                                              error=outcome.fatal[:300])
-                summary[serial] = {"users": len(users), "state": outcome.fatal[:200]}
-                continue
-            repos["devices"].set_users_pushed_hash(device["id"], digest)
-            repos["queue"].record_attempt(attempt_type="push_users",
-                                          event_count=len(users), result="success",
-                                          detail=f"accepted={outcome.accepted}")
-            repos["audit"].log(
-                actor="system", action="device_users.pushed", entity="device",
-                entity_id=serial,
-                detail=f"{len(users)} users published to the EMS as SN {target} "
-                       f"({outcome.detail})"[:400],
-            )
+        from ..ems.push import push_device_users
+
+        try:
+            result = push_device_users(self.ctx, device_id=None, force=False,
+                                       actor="system")
+        except Exception as exc:            # noqa: BLE001 - never kill the loop
+            log.warning("device-user sync failed: %s", exc)
+            self.status.update(users_last_error=str(exc)[:300])
+            return {"skipped": str(exc)[:200]}
+
+        if result.get("pushed"):
             self.status.update(users_pushed_at=iso_utc(), users_last_error=None)
-            summary[serial] = {"users": len(users), "state": "pushed",
-                               "accepted": outcome.accepted}
-        return summary
+        elif result.get("error"):
+            self.status.update(users_last_error=str(result["error"])[:300])
+        return {entry.get("serial"): entry for entry in result.get("devices") or []}
+
+    def push_device_users_now(self, device_id: int | None = None, *,
+                              force: bool = True) -> dict:
+        """Manual push of the terminal user tables — returns what happened.
+
+        Unlike the periodic path this does **not** depend on the EMS being
+        marked "online": the operator pressed the button, so the bridge
+        tries right now and reports the server's exact answer.
+        """
+        from ..ems.push import push_device_users
+
+        result = push_device_users(self.ctx, device_id=device_id, force=force,
+                                   actor="manual")
+        if result.get("pushed"):
+            self.status.update(users_pushed_at=iso_utc(), users_last_error=None)
+        elif result.get("error"):
+            self.status.update(users_last_error=str(result["error"])[:300])
+        self._next_users = time.monotonic() + max(
+            60, int(getattr(self.ctx.config, "users_sync_interval", 900)))
+        return result
 
     # ---------------------------------------------------------- ADMS commands --
     def _handle_commands(self, device: dict, commands: list[str]) -> None:

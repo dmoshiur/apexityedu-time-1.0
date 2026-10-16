@@ -426,23 +426,114 @@ def create_app(ctx) -> Flask:
     @app.route("/api/device-users/push", methods=["POST"])
     @auth.login_required
     def api_device_users_push():
-        """Force publication of the cached user tables to the EMS."""
-        if ctx.sync_worker is None:
-            return fail("sync worker is not running", 503)
+        """Publish the cached user tables to the EMS **now** and report it.
+
+        The old implementation only nudged the background worker, so a push
+        the server refused looked exactly like a push that worked. The
+        server's answer is now returned to the browser.
+        """
+        from ..ems.push import PushError, format_push_result, push_device_users
+
         payload = request.get_json(silent=True) or request.form
         device_id = payload.get("device_id")
+        serial = str(payload.get("device_serial") or "").strip()
+        if not device_id and serial:
+            found = repos["devices"].get_by_serial(serial)
+            if not found:
+                return fail(f"no registered device with serial {serial!r}", 404)
+            device_id = found["id"]
         if device_id:
             device = repos["devices"].get_by_id(int(device_id))
             if not device:
                 return fail("device not found", 404)
-            repos["devices"].set_users_pushed_hash(device["id"], None)
-        else:
-            for device in repos["devices"].list_active():
-                repos["devices"].set_users_pushed_hash(device["id"], None)
+            device_id = int(device_id)
         repos["audit"].log(actor=auth.current_actor(), action="device_users.push_requested")
-        ctx.sync_worker._next_users = 0.0
-        ctx.sync_worker.wake()
-        return ok(queued=True)
+        try:
+            result = push_device_users(ctx, device_id=device_id, force=True,
+                                       actor=auth.current_actor())
+        except PushError as exc:
+            return fail(str(exc), 503)
+        result["text"] = format_push_result(result)
+        return ok(result=result)
+
+    @app.route("/api/people/push", methods=["POST"])
+    @auth.login_required
+    def api_people_push():
+        """Publish the people directory (students/teachers/staff) to the EMS."""
+        from ..ems.push import PushError, push_people
+
+        payload = request.get_json(silent=True) or request.form
+        types = payload.get("types") or None
+        if isinstance(types, str):
+            types = [t.strip() for t in types.split(",") if t.strip()]
+        repos["audit"].log(actor=auth.current_actor(), action="people.push_requested")
+        try:
+            result = push_people(ctx, person_types=types,
+                                 ems_student_id=(payload.get("id") or "").strip() or None)
+        except PushError as exc:
+            return fail(str(exc), 503)
+        return ok(result=result)
+
+    @app.route("/api/people/create", methods=["POST"])
+    @auth.login_required
+    def api_people_create():
+        """Create or update one person (student/teacher/staff) in the EMS."""
+        from ..ems.push import PushError, create_person
+
+        payload = request.get_json(silent=True) or request.form
+        person = {
+            "id": str(payload.get("id") or payload.get("ems_student_id") or "").strip(),
+            "name": str(payload.get("name") or "").strip(),
+            "person_type": str(payload.get("person_type") or "student").strip().lower(),
+            "admission_no": (payload.get("admission_no") or "").strip() or None,
+            "roll_no": (payload.get("roll_no") or "").strip() or None,
+            "class_name": (payload.get("class") or payload.get("class_name") or "").strip() or None,
+            "section": (payload.get("section") or "").strip() or None,
+            "employee_no": (payload.get("employee_no") or "").strip() or None,
+            "designation": (payload.get("designation") or "").strip() or None,
+            "department": (payload.get("department") or "").strip() or None,
+            "active": str(payload.get("active", "1")).lower() not in ("0", "false", "no"),
+        }
+        repos["audit"].log(actor=auth.current_actor(), action="people.create_requested",
+                           entity="person", entity_id=person["id"])
+        try:
+            result = create_person(ctx, person)
+        except PushError as exc:
+            return fail(str(exc), 400)
+        if result.get("unsupported"):
+            return fail(result.get("error") or "this EMS cannot store people", 501)
+        if not result.get("ok"):
+            return fail(result.get("error") or "the EMS refused the person", 502)
+        return ok(result=result)
+
+    @app.route("/api/sync/now", methods=["POST"])
+    @auth.login_required
+    def api_sync_now():
+        """One manual sync pass: roster → device users → attendance."""
+        from ..ems.base import EmsError
+        from ..ems.push import (
+            PushError, push_attendance_now, push_device_users,
+        )
+        from ..students.directory import refresh_people
+
+        report = {"roster": None, "users": None, "attendance": None, "errors": []}
+        try:
+            report["roster"] = refresh_people(ctx.ems_client, repos)
+        except (EmsError, PushError) as exc:
+            report["errors"].append(f"roster: {exc}")
+        try:
+            report["users"] = push_device_users(ctx, force=True,
+                                                actor=auth.current_actor())
+        except PushError as exc:
+            report["errors"].append(f"device users: {exc}")
+        try:
+            report["attendance"] = push_attendance_now(ctx)
+        except PushError as exc:
+            report["errors"].append(f"attendance: {exc}")
+        report["ok"] = not report["errors"]
+        repos["audit"].log(actor=auth.current_actor(), action="sync.manual",
+                           detail="; ".join(report["errors"])[:400] or "manual sync")
+        return ok(result=report)
 
     @app.route("/api/ems/verify", methods=["GET", "POST"])
     @auth.login_required

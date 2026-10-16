@@ -5,6 +5,11 @@
               additionally by our named mutex.
 * uninstall → remove the task (data preserved).
 * start / stop / restart / status → schtasks.exe control + liveness probe.
+* install-sync / uninstall-sync → an *optional* second, periodic task
+              ("ApexityEduBridge-Sync") that runs ``sync-now`` every N
+              minutes. It is the safety net for schools that close the app
+              between shifts: attendance, user tables and the people
+              directory are still pushed to ApexityEdu on a schedule.
 
 A native pywin32 Windows Service also exists (windows_service/service.py);
 Task Scheduler is the default because it needs no extra packages and shows
@@ -21,6 +26,8 @@ from xml.sax.saxutils import escape
 log = logging.getLogger("apexity_bridge.windows_service.control")
 
 TASK_NAME = "ApexityEduBridge"
+SYNC_TASK_NAME = "ApexityEduBridge-Sync"
+DEFAULT_SYNC_INTERVAL_MINUTES = 15
 
 
 def _is_windows() -> bool:
@@ -40,6 +47,21 @@ def launch_command() -> tuple[str, str, str]:
     python_exe = str(Path(sys.executable))
     workdir = str(Path.cwd())
     return python_exe, "-m apexity_bridge run", workdir
+
+
+def launch_command_for_sync() -> tuple[str, str, str]:
+    """(executable, arguments, working_directory) for the periodic sync task.
+
+    The one-shot sync must be able to print its result into a log, so the
+    console build (``python``, not ``pythonw``) is used.
+    """
+    if getattr(sys, "frozen", False):
+        exe = str(Path(sys.executable).resolve())
+        workdir = str(Path(exe).parent)
+        return exe, "sync-now", workdir
+    python_exe = str(Path(sys.executable))
+    workdir = str(Path.cwd())
+    return python_exe, "-m apexity_bridge sync-now", workdir
 
 
 def task_xml(*, python_exe: str, workdir: str, logon_user: str | None = None,
@@ -99,10 +121,173 @@ def task_xml(*, python_exe: str, workdir: str, logon_user: str | None = None,
 """
 
 
+def periodic_task_xml(*, python_exe: str, workdir: str,
+                      interval_minutes: int = DEFAULT_SYNC_INTERVAL_MINUTES,
+                      arguments: str | None = None) -> str:
+    """Task that repeats ``sync-now`` every N minutes, forever.
+
+    This is the *scheduled* half of the auto-start story: the bridge app
+    itself is the always-on collector, this task is the belt-and-braces
+    pusher for schools that close the app between shifts.
+    """
+    args = arguments if arguments is not None else "-m apexity_bridge sync-now"
+    try:
+        minutes = max(1, int(interval_minutes))
+    except (TypeError, ValueError):
+        minutes = DEFAULT_SYNC_INTERVAL_MINUTES
+    iso = f"PT{minutes}M"
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <URI>\\{SYNC_TASK_NAME}</URI>
+    <Description>ApexityEdu Bridge — scheduled sync: pushes attendance, device users and the people directory to ApexityEdu every {minutes} minute(s).</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>{iso}</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>2026-01-01T00:05:00</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+    <ExecutionTimeLimit>PT15M</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(python_exe)}</Command>
+      <Arguments>{escape(args)}</Arguments>
+      <WorkingDirectory>{escape(workdir)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
 def _run(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
 
 
+# --------------------------------------------------------------------- tasks --
+def _register(config, name: str, xml: str) -> tuple[int, str]:
+    xml_path = config.data_dir / f"{name}-task.xml"
+    try:
+        xml_path.parent.mkdir(parents=True, exist_ok=True)
+        xml_path.write_text(xml, encoding="utf-16")
+    except OSError as exc:
+        return 1, f"could not write {xml_path}: {exc}"
+    result = _run(["schtasks", "/Create", "/TN", name, "/XML", str(xml_path), "/F"])
+    if result.returncode != 0:
+        return 1, f"task registration failed:\n{result.stdout}{result.stderr}"
+    return 0, f"Task '{name}' registered."
+
+
+def install_task(config) -> tuple[int, str]:
+    python_exe, arguments, workdir = launch_command()
+    xml = task_xml(python_exe=python_exe, workdir=workdir, arguments=arguments)
+    code, message = _register(config, TASK_NAME, xml)
+    if code:
+        return code, message
+    return 0, (f"Task '{TASK_NAME}' registered (auto-start at logon/boot, "
+               f"restart-on-failure).\nStart it now with:  "
+               f"python -m apexity_bridge service start")
+
+
+def uninstall_task() -> tuple[int, str]:
+    _run(["schtasks", "/End", "/TN", TASK_NAME])
+    result = _run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"])
+    if result.returncode != 0:
+        return 1, f"task removal failed: {result.stdout}{result.stderr}"
+    return 0, f"Task '{TASK_NAME}' removed. Data was PRESERVED."
+
+
+def install_sync_task(config, interval_minutes: int = DEFAULT_SYNC_INTERVAL_MINUTES) -> tuple[int, str]:
+    python_exe, arguments, workdir = launch_command_for_sync()
+    xml = periodic_task_xml(python_exe=python_exe, workdir=workdir,
+                            interval_minutes=interval_minutes, arguments=arguments)
+    code, message = _register(config, SYNC_TASK_NAME, xml)
+    if code:
+        return code, message
+    return 0, (f"Task '{SYNC_TASK_NAME}' registered — a scheduled sync runs "
+               f"'sync-now' every {interval_minutes} minute(s), so attendance, "
+               f"device users and the people directory reach ApexityEdu even "
+               f"when the desktop app is closed.")
+
+
+def uninstall_sync_task() -> tuple[int, str]:
+    _run(["schtasks", "/End", "/TN", SYNC_TASK_NAME])
+    result = _run(["schtasks", "/Delete", "/TN", SYNC_TASK_NAME, "/F"])
+    if result.returncode != 0:
+        return 1, f"task removal failed: {result.stdout}{result.stderr}"
+    return 0, f"Task '{SYNC_TASK_NAME}' removed."
+
+
+def start_task(name: str = TASK_NAME) -> tuple[int, str]:
+    result = _run(["schtasks", "/Run", "/TN", name])
+    return result.returncode, (result.stdout.strip() or result.stderr.strip())
+
+
+def stop_task(name: str = TASK_NAME) -> tuple[int, str]:
+    result = _run(["schtasks", "/End", "/TN", name])
+    return result.returncode, (result.stdout.strip() or result.stderr.strip())
+
+
+def task_status(name: str = TASK_NAME) -> dict:
+    """Structured state of one scheduled task (installed? running? next run?)."""
+    if not _is_windows():
+        return {"name": name, "supported": False, "installed": False,
+                "state": "not supported on this platform", "detail": ""}
+    result = _run(["schtasks", "/Query", "/TN", name, "/V", "/FO", "LIST"])
+    if result.returncode != 0:
+        return {"name": name, "supported": True, "installed": False,
+                "state": "not installed", "detail": ""}
+    state = ""
+    detail = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("status"):
+            state = stripped.split(":", 1)[-1].strip()
+        elif any(k in stripped for k in ("TaskName", "Last Run", "Next Run",
+                                         "Task To Run", "Logon Mode")):
+            detail.append(stripped)
+    return {"name": name, "supported": True, "installed": True,
+            "state": state or "installed", "detail": "\n".join(detail)}
+
+
+def scheduler_overview(config) -> dict:
+    """Everything the desktop app needs to show about the scheduler."""
+    if not _is_windows():
+        return {
+            "supported": False,
+            "message": "The Windows Task Scheduler is only available on Windows. "
+                       "On this platform run the bridge directly "
+                       "(python -m apexity_bridge run) or use systemd.",
+            "tasks": [],
+        }
+    tasks = [task_status(TASK_NAME), task_status(SYNC_TASK_NAME)]
+    return {"supported": True, "message": "", "tasks": tasks}
+
+
+# ------------------------------------------------------------------ actions --
 def service_action(action: str, config) -> int:
     if not _is_windows():
         print("The 'service' command manages Windows auto-start (Task Scheduler).")
@@ -110,70 +295,49 @@ def service_action(action: str, config) -> int:
         print("(Linux/macOS deployments may use systemd/supervisord instead.)")
         return 1
 
-    handlers = {
-        "install": _install, "uninstall": _uninstall, "start": _start,
-        "stop": _stop, "restart": _restart, "status": _status,
-    }
-    return handlers[action](config)
-
-
-def _install(config) -> int:
-    python_exe, arguments, workdir = launch_command()
-    xml = task_xml(python_exe=python_exe, workdir=workdir, arguments=arguments)
-    xml_path = config.data_dir / "ApexityEduBridge-task.xml"
-    xml_path.parent.mkdir(parents=True, exist_ok=True)
-    xml_path.write_text(xml, encoding="utf-16")
-    result = _run(["schtasks", "/Create", "/TN", TASK_NAME, "/XML", str(xml_path), "/F"])
-    if result.returncode != 0:
-        print(f"task registration failed:\n{result.stdout}{result.stderr}")
+    if action == "install":
+        code, message = install_task(config)
+    elif action == "uninstall":
+        code, message = uninstall_task()
+    elif action == "start":
+        code, message = start_task(TASK_NAME)
+    elif action == "stop":
+        code, message = stop_task(TASK_NAME)
+    elif action == "restart":
+        stop_task(TASK_NAME)
+        code, message = start_task(TASK_NAME)
+    elif action == "status":
+        code, message = _status(config)
+    elif action == "install-sync":
+        code, message = install_sync_task(config)
+    elif action == "uninstall-sync":
+        code, message = uninstall_sync_task()
+    else:
+        print(f"unknown service action: {action}")
         return 1
-    print(f"Task '{TASK_NAME}' registered (auto-start at logon/boot, restart-on-failure).")
-    print("Start it now with:  python -m apexity_bridge service start")
-    return 0
+    print(message)
+    return code
 
 
-def _uninstall(config) -> int:
-    _run(["schtasks", "/End", "/TN", TASK_NAME])
-    result = _run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"])
-    if result.returncode != 0:
-        print(f"task removal failed: {result.stdout}{result.stderr}")
-        return 1
-    print(f"Task '{TASK_NAME}' removed. Data at {config.data_dir} was PRESERVED.")
-    return 0
-
-
-def _start(config) -> int:
-    result = _run(["schtasks", "/Run", "/TN", TASK_NAME])
-    print(result.stdout.strip() or result.stderr.strip())
-    return result.returncode
-
-
-def _stop(config) -> int:
-    result = _run(["schtasks", "/End", "/TN", TASK_NAME])
-    print(result.stdout.strip() or result.stderr.strip())
-    return result.returncode
-
-
-def _restart(config) -> int:
-    _stop(config)
-    return _start(config)
-
-
-def _status(config) -> int:
-    result = _run(["schtasks", "/Query", "/TN", TASK_NAME, "/V", "/FO", "LIST"])
-    if result.returncode != 0:
-        print(f"Task '{TASK_NAME}' is NOT installed.")
-        return 1
-    for line in result.stdout.splitlines():
-        if any(k in line for k in ("TaskName", "Status", "Last Run", "Next Run",
-                                   "Task To Run", "Logon Mode")):
-            print(line.strip())
+def _status(config) -> tuple[int, str]:
+    lines = []
+    code = 0
+    for name in (TASK_NAME, SYNC_TASK_NAME):
+        state = task_status(name)
+        if state["installed"]:
+            lines.append(f"Task '{name}': {state['state']}")
+            if state["detail"]:
+                lines.append(state["detail"])
+        else:
+            lines.append(f"Task '{name}': NOT installed")
+            if name == TASK_NAME:
+                code = 1
     # liveness probe of the local dashboard
     try:
         import urllib.request
         url = f"http://{config.dashboard_host}:{config.dashboard_port}/login"
         with urllib.request.urlopen(url, timeout=3) as resp:
-            print(f"dashboard: responding (HTTP {resp.status}) at {url}")
+            lines.append(f"dashboard: responding (HTTP {resp.status}) at {url}")
     except Exception as exc:
-        print(f"dashboard: not responding at {config.dashboard_host}:{config.dashboard_port} ({exc})")
-    return 0
+        lines.append(f"dashboard: not responding at {config.dashboard_host}:{config.dashboard_port} ({exc})")
+    return code, "\n".join(lines)

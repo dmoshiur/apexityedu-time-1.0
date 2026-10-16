@@ -93,6 +93,24 @@ def ctx(config, repos, adapter_factory):
     context.stop_event.set()
 
 
+@pytest.fixture()
+def iclock_server():
+    """A fake ZKTeco iClock/ADMS server (real HTTP, ephemeral port)."""
+    from fakes import FakeIclockServer
+    server = FakeIclockServer()
+    yield server
+    server.stop()
+
+
+@pytest.fixture()
+def rest_server():
+    """A fake EMS that speaks the documented REST bridge contract."""
+    from fakes import FakeRestServer
+    server = FakeRestServer()
+    yield server
+    server.stop()
+
+
 def seed_device(repos, *, serial="SN-K40-001", ip="192.168.0.201",
                 status="registered", label="Gate K40"):
     device_id, _ = repos["devices"].upsert_identified(

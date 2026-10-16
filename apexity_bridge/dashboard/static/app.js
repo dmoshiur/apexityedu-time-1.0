@@ -458,6 +458,59 @@ document.addEventListener("DOMContentLoaded", () => {
       } catch (err) { flash(err.message, true); }
       loadStudents();
     });
+    const pushPeopleBtn = document.getElementById("btn-push-people");
+    if (pushPeopleBtn) pushPeopleBtn.addEventListener("click", async () => {
+      const type = document.getElementById("filter-type").value;
+      const status = document.getElementById("push-people-status");
+      if (status) status.textContent = "publishing the people directory to ApexityEdu…";
+      try {
+        const d = await api("/api/people/push", {
+          method: "POST", json: type ? { types: [type] } : {},
+        });
+        const r = d.result || {};
+        const text = r.unsupported
+          ? (r.error || "this EMS cannot store people yet")
+          : `Published ${r.accepted || 0} of ${r.people || 0} people to ApexityEdu.`;
+        if (status) status.textContent = text;
+        flash(text, !r.ok);
+      } catch (err) {
+        if (status) status.textContent = "";
+        flash(err.message, true);
+      }
+    });
+    const addPersonBtn = document.getElementById("btn-add-person");
+    if (addPersonBtn) addPersonBtn.addEventListener("click", () => {
+      document.getElementById("add-person-dialog").showModal();
+    });
+    const addPersonForm = document.getElementById("add-person-form");
+    if (addPersonForm) addPersonForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const body = {
+        id: f.id.value.trim(),
+        name: f.name.value.trim(),
+        person_type: f.person_type.value,
+        admission_no: f.admission_no.value.trim(),
+        roll_no: f.roll_no.value.trim(),
+        class: f.class_name.value.trim(),
+        section: f.section.value.trim(),
+        employee_no: f.employee_no.value.trim(),
+        designation: f.designation.value.trim(),
+        department: f.department.value.trim(),
+        active: 1,
+      };
+      try {
+        await api("/api/people/create", { method: "POST", json: body });
+        document.getElementById("add-person-dialog").close();
+        f.reset();
+        flash(`${body.name} is now in ApexityEdu.`);
+        loadStudents();
+      } catch (err) { flash(err.message, true); }
+    });
+    const addPersonCancel = document.getElementById("add-person-cancel");
+    if (addPersonCancel) addPersonCancel.addEventListener("click", () => {
+      document.getElementById("add-person-dialog").close();
+    });
     document.getElementById("prev-page").addEventListener("click", () => { if (st.page > 1) { st.page--; loadStudents(); } });
     document.getElementById("next-page").addEventListener("click", () => { st.page++; loadStudents(); });
     document.getElementById("map-cancel").addEventListener("click", () => document.getElementById("map-dialog").close());
@@ -605,10 +658,21 @@ if (page === "device-users") {
     });
 
     document.getElementById("du-push").addEventListener("click", async () => {
+      const serial = document.getElementById("du-device").value;
+      const status = document.getElementById("du-status");
+      status.textContent = "publishing the user tables to ApexityEdu…";
       try {
-        await api("/api/device-users/push", { method: "POST", json: {} });
-        flash("Queued — the bridge is publishing the user tables to ApexityEdu now.");
-      } catch (err) { flash(err.message, true); }
+        const d = await api("/api/device-users/push", {
+          method: "POST", json: serial ? { device_serial: serial } : {},
+        });
+        const r = d.result || {};
+        status.textContent = r.text || "";
+        flash(r.text || "Published.", !r.ok);
+      } catch (err) {
+        status.textContent = "";
+        flash(err.message, true);
+      }
+      loadDeviceUsers();
     });
 
     document.getElementById("du-auto").addEventListener("click", async () => {
@@ -707,6 +771,25 @@ if (page === "device-users") {
         link.classList.remove("hidden");
         flash("Diagnostics bundle ready.");
       } catch (err) { flash(err.message, true); }
+    });
+    const syncNowBtn = document.getElementById("btn-sync-now");
+    if (syncNowBtn) syncNowBtn.addEventListener("click", async () => {
+      const box = document.getElementById("sync-now-status");
+      if (box) box.textContent = "syncing…";
+      try {
+        const d = await api("/api/sync/now", { method: "POST" });
+        const r = d.result || {};
+        const text = (r.errors || []).length
+          ? `Sync finished with problems: ${(r.errors || []).join("; ")}`
+          : `Sync finished — roster ${(r.roster || {}).fetched || 0} people, ` +
+            `device users ${(r.users || {}).pushed || 0} terminal(s), ` +
+            `attendance ${(r.attendance || {}).pushed || 0} event(s).`;
+        if (box) box.textContent = text;
+        flash(text, (r.errors || []).length > 0);
+      } catch (err) {
+        if (box) box.textContent = "";
+        flash(err.message, true);
+      }
     });
     loadSettings();
   }

@@ -4,6 +4,7 @@ CONTENTS
     GET  /api/v1/bridge/health
     POST /api/v1/bridge/devices/register
     GET  /api/v1/bridge/people?cursor=&limit=&types=   (students + teachers + staff)
+    POST /api/v1/bridge/people                         (write people — manual push)
     GET  /api/v1/bridge/students?cursor=&limit=        (legacy fallback)
     POST /api/v1/bridge/devices/users                  (terminal user table)
     POST /api/v1/bridge/attendance/batch
@@ -163,6 +164,61 @@ def people():
     has_more = get_db().execute("SELECT COUNT(*) c FROM students").fetchone()["c"] > nxt
     return jsonify(people=[dict(r) for r in rows],
                    next_cursor=str(nxt) if has_more and rows else None)
+
+
+@app.post("/api/v1/bridge/people")
+@require_token
+def upsert_people():
+    """Write people (students AND teachers AND staff) into the EMS.
+
+    This is the server side of the manual "publish people to ApexityEdu"
+    button. The payload is an **upsert keyed by ``id``**: sending the same
+    person twice updates the row instead of creating a duplicate, so the
+    button can be pressed as often as the administrator likes.
+
+    Request:
+        {"people": [{"id": "S1001", "name": "Afnan Rahman",
+                     "person_type": "student", "admission_no": "ADM-001",
+                     "roll_no": "12", "class": "Six", "section": "A",
+                     "active": true}]}
+    Reply:
+        {"ok": true, "accepted": 1, "created": 1, "updated": 0}
+    """
+    body = request.get_json(silent=True) or {}
+    people = body.get("people")
+    if not isinstance(people, list) or not people:
+        return jsonify({"error": "people[] required"}), 400
+    db = get_db()
+    created = updated = 0
+    for p in people:
+        pid = str(p.get("id") or p.get("ems_student_id") or "").strip()
+        if not pid:
+            continue
+        person_type = str(p.get("person_type") or "student").strip().lower()
+        if person_type not in ("student", "teacher", "staff", "other"):
+            person_type = "other"
+        exists = db.execute("SELECT 1 FROM students WHERE id = ?", (pid,)).fetchone()
+        db.execute(
+            "INSERT INTO students (id, name, person_type, admission_no, roll_no,"
+            " employee_no, designation, department, class, section, active)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET name=excluded.name,"
+            " person_type=excluded.person_type, admission_no=excluded.admission_no,"
+            " roll_no=excluded.roll_no, employee_no=excluded.employee_no,"
+            " designation=excluded.designation, department=excluded.department,"
+            " class=excluded.class, section=excluded.section, active=excluded.active",
+            (pid, str(p.get("name") or ""), person_type, p.get("admission_no"),
+             p.get("roll_no"), p.get("employee_no"), p.get("designation"),
+             p.get("department"), p.get("class"), p.get("section"),
+             1 if p.get("active", True) else 0),
+        )
+        if exists:
+            updated += 1
+        else:
+            created += 1
+    db.commit()
+    return jsonify(ok=True, accepted=created + updated, created=created,
+                   updated=updated)
 
 
 @app.post("/api/v1/bridge/devices/users")

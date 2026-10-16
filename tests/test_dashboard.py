@@ -339,3 +339,81 @@ def test_ems_verify_endpoint_reports_a_problem(client, ctx):
         assert "no EMS client" in report["error"]
     else:
         assert report["devices"] and report["ok"] is False
+
+
+# ------------------------------------------------- manual pushes (the buttons) --
+def _attach_rest_worker(ctx, rest_server):
+    """Give the dashboard a live EMS client pointing at the fake server."""
+    from apexity_bridge.sync.worker import SyncWorker
+    from fakes import FakeRestServer
+
+    ctx.repos["settings"].set("ems_base_url", rest_server.url)
+    ctx.repos["settings"].set("ems_protocol", "rest")
+    ctx.secret_store.set_ems_token(FakeRestServer.TOKEN)
+    ctx.sync_worker = SyncWorker(ctx)
+    return ctx.sync_worker
+
+
+def test_device_users_push_endpoint_reports_the_server_answer(client, ctx,
+                                                                rest_server):
+    _attach_rest_worker(ctx, rest_server)
+    seed_device(ctx.repos, serial="SN-DASH")
+    ctx.repos["device_users"].replace_for("SN-DASH", [
+        {"user_id": "1", "name": "Rahim", "privilege": 0, "card": None}])
+    token = _login(client)
+    resp = client.post("/api/device-users/push", json={},
+                       headers={"X-CSRF-Token": token})
+    assert resp.status_code == 200
+    result = resp.get_json()["result"]
+    assert result["ok"] is True
+    assert result["devices"][0]["state"] == "pushed"
+    assert rest_server.device_user_uploads
+
+
+def test_people_push_endpoint_publishes_the_directory(client, ctx, rest_server):
+    _attach_rest_worker(ctx, rest_server)
+    seed_students(ctx.repos)
+    token = _login(client)
+    resp = client.post("/api/people/push", json={},
+                       headers={"X-CSRF-Token": token})
+    assert resp.status_code == 200
+    result = resp.get_json()["result"]
+    assert result["ok"] is True
+    assert result["people"] == 3
+    assert rest_server.people_uploads
+
+
+def test_people_push_endpoint_reports_a_missing_endpoint(client, ctx, rest_server):
+    _attach_rest_worker(ctx, rest_server)
+    rest_server.people_write_enabled = False
+    seed_students(ctx.repos)
+    token = _login(client)
+    resp = client.post("/api/people/push", json={},
+                       headers={"X-CSRF-Token": token})
+    assert resp.status_code == 200
+    result = resp.get_json()["result"]
+    assert result["unsupported"] is True
+    assert "POST /api/v1/bridge/people" in result["error"]
+
+
+def test_people_create_endpoint_creates_one_person(client, ctx, rest_server):
+    _attach_rest_worker(ctx, rest_server)
+    token = _login(client)
+    resp = client.post("/api/people/create",
+                       json={"id": "T2001", "name": "Sir Alam",
+                             "person_type": "teacher", "designation": "Headmaster"},
+                       headers={"X-CSRF-Token": token})
+    assert resp.status_code == 200
+    assert resp.get_json()["result"]["ok"] is True
+    assert rest_server.people_uploads[0]["people"][0]["id"] == "T2001"
+    assert ctx.repos["students"].get("T2001")["name"] == "Sir Alam"
+
+
+def test_sync_now_endpoint_runs_one_pass(client, ctx, rest_server):
+    _attach_rest_worker(ctx, rest_server)
+    seed_students(ctx.repos)
+    token = _login(client)
+    resp = client.post("/api/sync/now", json={}, headers={"X-CSRF-Token": token})
+    assert resp.status_code == 200
+    result = resp.get_json()["result"]
+    assert "roster" in result and "users" in result and "attendance" in result

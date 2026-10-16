@@ -1,7 +1,7 @@
 # Acceptance Test Plan — real K40 + live EMS
 
 Automated unit/integration coverage is in `tests/` (run:
-`scripts/run_tests.sh` — **209 tests**). This plan is the **real-device
+`scripts/run_tests.sh` — **235 tests**). This plan is the **real-device
 gate**: it must be executed on site with the actual K40 and the actual EMS
 before the bridge is declared production-ready. Unit tests passing never
 substitute for hardware verification.
@@ -30,14 +30,20 @@ Legend: ✅ covered by automated tests — still verify on hardware · 🔧 hard
 | 18 | "Everything is green but nothing arrives" 🔧 | ✅ `test_handshake_success_is_not_ingestion_proof`, `test_probe_attlog_path_reports_exact_server_reply` | Run `python -m apexity_bridge verify-ems` on the school PC. | Per-device report: handshake / presence / **empty ATTLOG POST** / USER table, each with the server's raw reply. `Ingestion verified` on the Overview flips only after a real acceptance — a bare handshake must never be reported as success. |
 | 19 | EMS registered a device under another serial 🔧 | ✅ `test_ems_serial_override_is_used_for_every_push` | Set **Devices → EMS serial…** to the serial shown in apexityedu.com → Biometric Devices; re-run `verify-ems`. | ATTLOG, USER, handshake and presence all use the EMS serial while identity/IP repair keeps using the hardware serial; punches appear in ApexityEdu. |
 | 20 | Teachers and staff punch too 🔧 | ✅ `test_people_directory_covers_teachers_and_staff`, `test_mapping_accepts_any_person_type` | Refresh **People**; filter by *Teachers* / *Staff*; bind a teacher's PIN on the Device Users page. | Students, teachers and staff all download from the EMS (`person_type` shown); a teacher's punch is attributed to the teacher, not dropped. |
+| 21 | Manual push of device users 🔧 | ✅ `test_manual_push_works_even_when_the_ems_is_not_marked_online`, `test_push_device_users_reports_the_result` | Enrol two users on the K40 → **Device Users → Read from device** → **Push users to EMS** (or `python -m apexity_bridge push-users`). | The dialog names the terminal, the user count and the server's answer (`pushed` / `refused` / `auth error` / `no users read yet`) — never a silent "queued". The two users are visible in ApexityEdu. |
+| 22 | People pushed to the EMS 🔧 | ✅ `test_push_people_publishes_the_whole_directory`, `test_create_person_writes_to_the_ems_and_caches_locally` | **People → Push people to ApexityEdu** (or `push-people`), and **Add person to ApexityEdu…** for one new teacher. | Students, teachers and staff are accepted by the EMS and the accepted count is shown. If the EMS has no `POST /api/v1/bridge/people`, the message says so verbatim instead of claiming success. |
+| 23 | Scheduler keeps pushing when the app is closed 🔧 | ✅ `test_periodic_task_xml_runs_sync_now_periodically` | **Settings → Add scheduled sync** (or `service install-sync`); close the desktop app; wait one interval. | `ApexityEduBridge-Sync` runs `sync-now` every 15 minutes; pending attendance, device users and the people directory still reach the EMS. Task Scheduler → History shows the runs. |
 
 ## Sign-off checklist
 
 - [ ] `verify-ems` on the school PC proves the EMS **accepts** ATTLOG for every registered serial (not merely that it answers a handshake).
 - [ ] `probe-ems` also identifies the live EMS protocol, and the bridge is configured with it (`EMS_PROTOCOL` in Settings or `.env`).
 - [ ] People directory loads from the real EMS: students **and** teachers **and** staff, with `person_type` shown.
-- [ ] Device users are read from every K40 and published to the EMS.
+- [ ] Device users are read from every K40 and published to the EMS (manual push
+      button, not only the background loop).
+- [ ] Auto-start task `ApexityEduBridge` is installed and running; the optional
+      `ApexityEduBridge-Sync` task is installed if the app is closed between shifts.
 - [ ] **0 unmapped** device users, 0 conflicts — every PIN is bound to a person.
-- [ ] Scenarios 1–20 executed and ticked above.
+- [ ] Scenarios 1–23 executed and ticked above.
 - [ ] One full school day comparison: K40 screen count = bridge collected = EMS received.
 - [ ] Backup + restore drill performed (`Backup database now`, restore per TROUBLESHOOTING.md).

@@ -6,6 +6,8 @@
 > [Option A](#option-a--zkteco-iclock--adms-push-endpoint-already-present-on-apexityeducom)
 > — so the remaining work is: accept `POST` ATTLOG for a registered serial,
 > accept the `USER` table, and (optionally) expose the people directory.
+> The fourth item — *writing* people (`POST /people`, Option E) — is only
+> needed for the desktop app's manual "add person" button.
 > The bridge keeps collecting and queueing locally until then and says exactly
 > what is missing — nothing is faked.
 
@@ -266,6 +268,64 @@ Authorization: Bearer <device-token>
 Once ApexityEdu has the user table it can offer a *"map device user → person"*
 screen, exactly like the bridge's own **Device Users** page.
 
+## Option E — writing people to the EMS (students, teachers and staff)
+
+Option C is the **download** direction. This is the **write** direction: the
+bridge can publish the people directory (or a single person) to ApexityEdu,
+which is what the desktop app's **People → "Push people to ApexityEdu"** and
+**"Add person to ApexityEdu…"** buttons use.
+
+It is **optional**. An EMS that implements only `GET /people` answers 404 on
+this endpoint, and the bridge then says so in plain words
+("this EMS does not implement POST /api/v1/bridge/people") instead of
+pretending the people were saved.
+
+### `POST /api/v1/bridge/people`
+
+```http
+POST {EMS_BASE}/api/v1/bridge/people
+Authorization: Bearer <device-token>
+Content-Type: application/json
+```
+```json
+{
+  "people": [
+    {"id": "S1001", "name": "Afnan Rahman", "person_type": "student",
+     "admission_no": "ADM-001", "roll_no": "12", "class": "Six", "section": "A",
+     "active": true},
+    {"id": "T2001", "name": "Sir Alam", "person_type": "teacher",
+     "employee_no": "EMP-01", "designation": "Headmaster", "active": true},
+    {"id": "X3001", "name": "Bacchu Mia", "person_type": "staff",
+     "employee_no": "EMP-77", "designation": "Guard", "active": true}
+  ]
+}
+```
+→ `200 {"ok": true, "accepted": 3, "created": 2, "updated": 1, "detail": "stored"}`
+
+Rules the server must follow:
+
+* **Upsert keyed by `id`** — sending the same person twice must update the
+  existing row, never create a duplicate. The bridge may press the button
+  as often as it likes.
+* **`id` is required**; `name` is required for a usable row. Unknown fields
+  are ignored.
+* `person_type`: `student` (default) | `teacher` | `staff` | `other`.
+* `class`/`section` are meaningful for students, `designation`/`department`
+  for teachers and staff — send whichever apply.
+* `active: false` marks a person as no longer attending (the bridge keeps
+  inactive people in the directory, it never deletes them).
+* The reply must be JSON. `404` means "not implemented" and the bridge
+  reports that as a missing capability, not as a failure to retry.
+* `401/403` → the token/serial was rejected; `429/5xx` → retryable.
+
+A complete, runnable implementation of this endpoint (plus Options B, C and
+D) is in [`reference/ems_reference_api.py`](reference/ems_reference_api.py).
+
+### iClock has no equivalent
+iClock/ADMS carries device tables and punches only. People are written over
+REST — set `EMS_PROTOCOL=rest`, or keep `EMS_ROSTER_MODE=auto` so the REST
+side-channel stays available next to the iClock push protocol.
+
 ## Commands the bridge will answer (and the ones it never will)
 
 The bridge polls `getrequest` every health interval. It answers **read-only**
@@ -288,6 +348,7 @@ else (``EMS_EXECUTE_COMMANDS=0`` disables even these):
 | Get punches flowing with the least server work | **Option A** — accept `POST …/iclock/cdata?…&table=ATTLOG` for the registered serials and reply `OK: <n>`. Nothing else is required for data to move. |
 | Let a school see/choose who punched | **Option D** — accept `table=USER`, or implement `/api/v1/bridge/devices/users`. |
 | Push students **and teachers and staff** into the bridge | **Option C** — `GET /api/v1/bridge/people`. |
+| Let the school create students/teachers/staff from the desktop app | **Option E** — `POST /api/v1/bridge/people` (upsert by `id`). |
 | Full two-way integration later | **Option B** — the REST contract (health, register, people, attendance/batch, devices/users). |
 
 There is deliberately **no "server pulls from the school LAN" option**: the
