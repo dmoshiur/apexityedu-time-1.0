@@ -1,0 +1,6 @@
+# Tools used ONLY to freeze the Windows .exe and generate icons.
+# Runtime dependencies stay in requirements.txt.
+-r requirements.txt
+pyinstaller>=6.3,<7.0
+pillow>=10.0,<12.0
+pystray>=0.19,<1.0

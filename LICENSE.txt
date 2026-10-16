@@ -1,0 +1,11 @@
+ApexityEdu Smart Attendance Bridge
+Copyright (c) ApexityEdu. All rights reserved.
+
+This software is proprietary. You may install and use it on computers
+owned or operated by the licensed school / organisation for the purpose
+of connecting ZKTeco attendance terminals to the ApexityEdu EMS.
+
+You may not redistribute, sublicense, reverse engineer, or use the
+software to provide a competing service.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.

@@ -114,14 +114,41 @@ def _is_localhost(url: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
 
 
+def find_env_file() -> Path | None:
+    """Locate .env for a source checkout or a frozen Windows install.
+
+    Search order:
+      1. BRIDGE_ENV_FILE (explicit override)
+      2. %ProgramData%\\ApexityEduBridge\\.env  (installer-managed)
+      3. next to ApexityEduBridge.exe
+      4. current working directory
+    """
+    override = os.environ.get("BRIDGE_ENV_FILE", "").strip()
+    if override:
+        path = Path(override).expanduser()
+        return path if path.exists() else None
+    candidates = [
+        paths.default_data_dir() / ".env",
+        paths.app_dir() / ".env",
+        Path.cwd() / ".env",
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
 def load_config(env_file: str | os.PathLike | None = None, environ: dict | None = None) -> Config:
     """Build a Config from a .env file (if present) + environment variables."""
     if env_file is not None:
         load_dotenv(env_file)
     else:
-        default_env = Path.cwd() / ".env"
-        if default_env.exists():
-            load_dotenv(default_env)
+        found = find_env_file()
+        if found is not None:
+            load_dotenv(found)
     env = os.environ if environ is None else environ
 
     cfg = Config(

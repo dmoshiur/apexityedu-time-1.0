@@ -8,6 +8,7 @@ dist/
 
 # Virtual environments
 .venv/
+.venv-build/
 venv/
 
 # Local data, logs, secrets — never commit

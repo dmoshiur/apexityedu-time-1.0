@@ -14,7 +14,7 @@ license = { text = "Proprietary" }
 include = ["apexity_bridge*"]
 
 [tool.setuptools.package-data]
-"apexity_bridge.dashboard" = ["templates/*.html", "static/*.css", "static/*.js"]
+"apexity_bridge.dashboard" = ["templates/*.html", "static/*.css", "static/*.js", "static/*.png", "static/*.ico"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

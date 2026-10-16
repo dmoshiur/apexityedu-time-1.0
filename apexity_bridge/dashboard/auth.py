@@ -97,7 +97,7 @@ def csrf_protect(app) -> None:
             if session.get("admin") and "csrf_token" not in session:
                 session["csrf_token"] = secrets_mod.token_hex(32)
             return None
-        if request.endpoint in ("login", "static"):
+        if request.endpoint in ("login", "setup", "static"):
             return None
         if not session.get("admin"):
             return jsonify({"error": "authentication required"}), 401

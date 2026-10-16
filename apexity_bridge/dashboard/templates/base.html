@@ -4,12 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ session.get('csrf_token', '') }}">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='logo.png') }}">
   <title>{% block title %}ApexityEdu Bridge{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 </head>
 <body data-page="{% block page %}{% endblock %}">
 <header class="topbar">
-  <div class="brand">ApexityEdu <span>Smart Attendance Bridge</span></div>
+  <div class="brand">
+    <img src="{{ url_for('static', filename='logo.png') }}" alt="" width="32" height="32">
+    <div>ApexityEdu <span>Smart Attendance Bridge</span></div>
+  </div>
   <nav>
     <a href="{{ url_for('overview') }}" class="{{ 'active' if request.endpoint == 'overview' }}">Overview</a>
     <a href="{{ url_for('devices_page') }}" class="{{ 'active' if request.endpoint == 'devices_page' }}">Devices</a>
