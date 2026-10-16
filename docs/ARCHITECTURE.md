@@ -22,15 +22,51 @@
 | Module | Responsibility |
 |---|---|
 | `discovery/` | Enumerate PC subnets (`psutil`), rate-limited TCP probing (4370 default + extras), optional ICMP aid, ARP table hints, protocol-level identification, periodic re-scan with verified IP repair, "Scan LAN Now". |
-| `devices/` | `DeviceAdapter` interface + `ZkDeviceAdapter` (pyzk) + `FakeDeviceAdapter` (tests/dev). Read-only contract. |
-| `attendance/` | Per-device collectors (round-robin, per-device exponential backoff, identity re-verified on **every** connect) and the event pipeline (dedup + validation + mapping resolution). |
-| `sync/` | Offline-first worker: EMS health checks, durable task queue, batched pushes with jittered backoff, roster refresh. |
-| `ems/` | `IclockEmsClient`, `RestEmsClient`, live `probe`, factory. |
-| `students/` | Roster cache refresh + mapping service (manual/CSV, conflicts, unknown-student review). |
+| `devices/` | `DeviceAdapter` interface + `ZkDeviceAdapter` (pyzk) + `FakeDeviceAdapter` (tests/dev). Read-only contract; also mirrors the terminal's **user table** (PIN + name). |
+| `attendance/` | Per-device collectors (round-robin, per-device exponential backoff, identity re-verified on **every** connect) + the user-table mirror, and the event pipeline (dedup + validation + mapping resolution). |
+| `sync/` | Offline-first worker: EMS health checks, durable task queue, batched pushes with jittered backoff, **device-user publication**, people-directory refresh, read-only ADMS command answering. |
+| `ems/` | `IclockEmsClient`, `RestEmsClient`, live `probe`, ingestion `verify`, factory (supports split mode: iClock pushes + REST roster). |
+| `students/` | People-directory refresh (students + teachers + staff) + mapping service (manual/CSV, conflicts, unknown-person review). |
 | `dashboard/` | Local Flask+waitress UI; session auth (PBKDF2), CSRF + origin checks, login throttling; JSON API. |
 | `database/` | WAL SQLite, per-thread connections, migrations, integrity check + quarantine, online backups. |
 | `security/` | OS credential store for secrets (keyring → Windows Credential Manager), password hashing. |
 | `windows_service/` | Task Scheduler auto-start (default), optional pywin32 service, single-instance mutex. |
+
+## Who punched? (device users → people)
+
+A K40 reports a punch as `PIN` + timestamp. Nothing else. Two caches therefore
+exist side by side and are joined in the UI:
+
+* **`device_users_cache`** — the user table enrolled *on the terminal*, read
+  over the ZK protocol (read-only; templates and passwords are never touched,
+  and `Passwd=` is always empty when the table is published).
+* **`students_cache`** — the EMS *people* directory, downloaded from
+  ApexityEdu. `person_type` distinguishes `student` / `teacher` / `staff` /
+  `other`, because a school's terminals are punched by all of them.
+
+`device_user_mappings` binds (serial, PIN) → person. Until a PIN is bound, a
+punch is legitimate data with no owner: it is still stored and still pushed
+(an EMS with the user table can resolve it), but the dashboard marks it
+*NOT MAPPED* instead of pretending to know.
+
+The bridge also **publishes** the user table to the EMS (`table=USER` over
+iClock, `POST /devices/users` over REST) whenever it changes or the server
+asks via `DATA QUERY USERINFO`. That is what lets the EMS offer its own
+"map this device user" screen.
+
+## Device identity vs EMS identity
+
+The *hardware* serial identifies the terminal on the LAN (never the IP). The
+*EMS* serial (`devices.ems_serial`) is the name ApexityEdu knows the device
+by — schools routinely register a device in the EMS under a different string.
+They are separate on purpose:
+
+* collection, discovery and IP repair always use the hardware serial;
+* every push (ATTLOG, USER, handshake, presence) uses
+  `ems_serial or serial_number`.
+
+A mismatch between the two is the single most common reason a deployment says
+"connected" while nothing arrives. `verify-ems` detects it.
 
 ## Device identity rules (never violated)
 
@@ -45,6 +81,21 @@
 5. Collectors refuse to read a device whose reported serial differs from the
    registered one (protects against a stranger inheriting the old IP via DHCP).
 6. If no serial can be read → observation only, never a registered device.
+
+## Honest status: "online" is not "accepted"
+
+`EmsStatus.online` means *the EMS answered a handshake*. iClock servers answer
+a handshake for unknown serials by design, so this is not evidence of
+ingestion. Two separate flags exist and the dashboard shows both:
+
+* `online` — endpoint reachable.
+* `ingestion_verified` — the server explicitly accepted an ATTLOG upload
+  (`OK` / `OK: n`). Only real acceptance sets it.
+
+`python -m apexity_bridge verify-ems` and **Settings → Verify what the EMS
+accepts** produce the same evidence on demand, per serial, including an
+**empty** ATTLOG POST that proves the ingestion route without writing a single
+fake punch.
 
 ## Offline-first sync design
 

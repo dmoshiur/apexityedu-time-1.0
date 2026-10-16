@@ -164,8 +164,103 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_logs(created_at DESC);
 """
 
+SCHEMA_V2 = """
+-- ---------------------------------------------------------------------------
+-- v2 — "every person, every user" release.
+--
+-- 1. devices.ems_serial — the serial number the EMS knows this terminal by.
+--    It is NOT the same thing as the hardware serial: schools routinely add a
+--    device in the EMS (apexityedu.com → Biometric Devices) under a serial the
+--    EMS generated or the operator typed, and iClock servers only accept
+--    ATTLOG uploads for a serial they know. When this column is empty the
+--    bridge falls back to the hardware serial (previous behaviour).
+-- 2. students_cache becomes the EMS *people* directory: students AND teachers
+--    AND staff. person_type distinguishes them; existing rows stay 'student'.
+-- 3. device_users_cache — a read-only local copy of the user table enrolled on
+--    each terminal (PIN + name + privilege). This is what makes "the user is
+--    not shown in the bridge" solvable: the bridge can finally list the people
+--    the K40 knows about and let an administrator bind them to EMS people.
+-- 4. sync_queue gains the new task types (CHECK constraint forces a rebuild).
+-- ---------------------------------------------------------------------------
+ALTER TABLE devices ADD COLUMN ems_serial TEXT;
+ALTER TABLE devices ADD COLUMN users_pushed_hash TEXT;
+ALTER TABLE devices ADD COLUMN users_last_read_at TEXT;
+
+ALTER TABLE students_cache ADD COLUMN person_type TEXT NOT NULL DEFAULT 'student';
+ALTER TABLE students_cache ADD COLUMN employee_no TEXT;
+ALTER TABLE students_cache ADD COLUMN designation TEXT;
+ALTER TABLE students_cache ADD COLUMN department TEXT;
+CREATE INDEX IF NOT EXISTS idx_students_type ON students_cache(person_type);
+
+CREATE TABLE IF NOT EXISTS device_users_cache (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_serial  TEXT NOT NULL,                 -- hardware serial (identity)
+    user_id        TEXT NOT NULL,                 -- the PIN / biometric user id
+    name           TEXT,
+    privilege      INTEGER,                       -- 0 = user, 14 = admin (device role)
+    card           TEXT,
+    password       TEXT,                          -- never uploaded to the EMS
+    first_seen_at  TEXT NOT NULL,
+    last_seen_at   TEXT,
+    updated_at     TEXT NOT NULL,
+    UNIQUE(device_serial, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_device_users_serial ON device_users_cache(device_serial, user_id);
+CREATE INDEX IF NOT EXISTS idx_device_users_name ON device_users_cache(name);
+
+CREATE TABLE IF NOT EXISTS sync_queue_v2 (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_type    TEXT NOT NULL CHECK (task_type IN ('fetch_students','fetch_people',
+                                                    'register_device','push_attendance',
+                                                    'sync_device_users')),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed')),
+    run_after    TEXT NOT NULL,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 25,
+    last_error   TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+INSERT INTO sync_queue_v2 (id, task_type, payload_json, status, run_after, attempts,
+                           max_attempts, last_error, created_at, updated_at)
+    SELECT id, task_type, payload_json, status, run_after, attempts,
+           max_attempts, last_error, created_at, updated_at FROM sync_queue;
+DROP TABLE sync_queue;
+ALTER TABLE sync_queue_v2 RENAME TO sync_queue;
+CREATE INDEX IF NOT EXISTS idx_queue_due ON sync_queue(status, run_after);
+"""
+
+SCHEMA_V3 = """
+-- v3 — mappings can now be created by auto-mapping (source='auto'), so the
+-- CHECK constraint is widened. Rebuilt because SQLite cannot alter a CHECK.
+CREATE TABLE device_user_mappings_v2 (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_serial  TEXT NOT NULL,
+    device_user_id TEXT NOT NULL,
+    ems_student_id TEXT NOT NULL,
+    mapped_by      TEXT,
+    source         TEXT NOT NULL DEFAULT 'manual'
+                   CHECK (source IN ('manual', 'csv', 'auto')),
+    active         INTEGER NOT NULL DEFAULT 1,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    UNIQUE(device_serial, device_user_id)
+);
+INSERT INTO device_user_mappings_v2 (id, device_serial, device_user_id, ems_student_id,
+                                     mapped_by, source, active, created_at, updated_at)
+    SELECT id, device_serial, device_user_id, ems_student_id, mapped_by, source,
+           active, created_at, updated_at FROM device_user_mappings;
+DROP TABLE device_user_mappings;
+ALTER TABLE device_user_mappings_v2 RENAME TO device_user_mappings;
+CREATE INDEX IF NOT EXISTS idx_mappings_student
+    ON device_user_mappings(ems_student_id);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, SCHEMA_V1),
+    (2, SCHEMA_V2),
+    (3, SCHEMA_V3),
 ]
 CURRENT_VERSION = MIGRATIONS[-1][0]
 

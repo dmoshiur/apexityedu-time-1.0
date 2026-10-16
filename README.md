@@ -12,24 +12,38 @@ without depending on ZKTime 5.0.
 - **Offline-first sync**: every punch is persisted to local SQLite before any
   internet call, pushed to the EMS with idempotency keys and exponential
   backoff, and resumes exactly where it stopped after restarts/outages.
-- **Student directory + mapping UI** driven by the real EMS roster
-  (`device user → EMS student`), with conflict detection and validated CSV
-  bulk import/export.
-- **Native Windows desktop app** (no browser): Overview, Devices, Students,
-  Attendance, Logs, Settings — sharp 90° cards, system tray, same process as
-  the background service.
+- **Device users** — the bridge mirrors each K40's enrolled user table
+  (PIN + name, read-only) and publishes it to the EMS, so a punch stops being
+  an anonymous PIN and becomes a named person.
+- **People directory + mapping UI** driven by the real EMS roster —
+  **students, teachers and staff**, not students alone
+  (`device user → EMS person`), with one-click **auto-mapping** (exact
+  name/roll/admission/employee matches only — ambiguity is reported, never
+  guessed), conflict detection and validated CSV bulk import/export.
+- **Ingestion proof, not guesswork** — `verify-ems` asks the live server,
+  serial by serial, whether it really *accepts* attendance: handshake,
+  presence, an **empty** ATTLOG POST (no fake punch is ever written) and the
+  USER table. A green "EMS online" badge is never treated as proof.
+- **EMS-serial override** per device, so a school that registered a terminal
+  in ApexityEdu under a different serial can still push successfully.
+- **Native Windows desktop app** (no browser): Overview, Devices, Device Users,
+  People, Attendance, Logs, Settings — sharp 90° cards, system tray, same
+  process as the background service.
 - **Always-on background service** with Task Scheduler auto-start at boot:
   reconnects K40s and resumes the offline sync queue after a PC restart.
 
-> **Honest status.** The bridge software is complete and covered by 127
+> **Honest status.** The bridge software is complete and covered by 209
 > automated tests. A branded Windows installer produces `ApexityEduBridge.exe`
-> with the product logo (Start Menu, Desktop, tray). Two things can only be finished on site, and the software
-> will tell you plainly instead of guessing: (1) what protocol
-> `apexityedu.com` actually accepts for attendance — run
-> `python -m apexity_bridge probe-ems` on the school PC; the exact required
-> server-side changes (if any) are in
-> [`docs/EMS_API_CONTRACT.md`](docs/EMS_API_CONTRACT.md); (2) real-device
-> acceptance — execute [`docs/ACCEPTANCE_TEST_PLAN.md`](docs/ACCEPTANCE_TEST_PLAN.md).
+> with the product logo (Start Menu, Desktop, tray). Verified against the live
+> server on 2026-10-16: `apexityedu.com` **already speaks ZKTeco
+> iClock/ADMS** — `GET /iclock/cdata?SN=…&options=all` returns a valid
+> `GET OPTION FROM:` handshake and `GET /iclock/getrequest` returns `OK`.
+> What still has to be confirmed on the school PC (and what the software will
+> tell you plainly instead of guessing) is whether the server **accepts
+> `POST` ATTLOG for the serial you registered** — run
+> `python -m apexity_bridge verify-ems`. The exact server-side requirements
+> are in [`docs/EMS_API_CONTRACT.md`](docs/EMS_API_CONTRACT.md); real-device
+> acceptance is [`docs/ACCEPTANCE_TEST_PLAN.md`](docs/ACCEPTANCE_TEST_PLAN.md).
 
 ## Quick start — Windows 10/11
 
@@ -64,7 +78,8 @@ Full guide: [`docs/WINDOWS_DEPLOYMENT.md`](docs/WINDOWS_DEPLOYMENT.md).
 
 ```powershell
 .\scripts\Service-Control.ps1 status     # start | stop | restart | status
-.\.venv\Scripts\python.exe -m apexity_bridge probe-ems                 # what does the EMS accept?
+.\.venv\Scripts\python.exe -m apexity_bridge probe-ems                 # which protocol does the EMS speak?
+.\.venv\Scripts\python.exe -m apexity_bridge verify-ems                 # does it really ACCEPT our punches?
 .\.venv\Scripts\python.exe -m apexity_bridge scan                      # discovery + identification (read-only)
 .\.venv\Scripts\python.exe -m apexity_bridge scan --ip 192.168.0.201 --read-attendance 5
 .\.venv\Scripts\python.exe -m apexity_bridge set-token                 # EMS token → Credential Manager
@@ -84,7 +99,7 @@ Manager, the dashboard password is stored as a PBKDF2 hash.
 
 ```bash
 python3 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
-./scripts/run_tests.sh                     # 116 automated tests
+./scripts/run_tests.sh                     # 209 automated tests
 ./scripts/dev_run.sh                       # run the bridge in the foreground
 ```
 
@@ -93,7 +108,7 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
 | Doc | Contents |
 |---|---|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | design, identity rules, offline-first guarantees, security model, documented limitations |
-| [`docs/EMS_API_CONTRACT.md`](docs/EMS_API_CONTRACT.md) | **required EMS-side API** (iClock/ADMS + REST) + reference implementation |
+| [`docs/EMS_API_CONTRACT.md`](docs/EMS_API_CONTRACT.md) | **required EMS-side API** (iClock/ADMS + REST + people + device users), verified live findings, and which medium to pick |
 | [`docs/WINDOWS_DEPLOYMENT.md`](docs/WINDOWS_DEPLOYMENT.md) | install / update / uninstall / service details |
 | [`docs/WINDOWS_PACKAGING.md`](docs/WINDOWS_PACKAGING.md) | **Windows .exe + installer** (PyInstaller + Inno Setup) |
 | [`docs/ACCEPTANCE_TEST_PLAN.md`](docs/ACCEPTANCE_TEST_PLAN.md) | 16-scenario on-site verification gate |

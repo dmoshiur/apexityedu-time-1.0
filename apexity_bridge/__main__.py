@@ -9,6 +9,8 @@ Commands
     scan                 connectivity-proof tool: discover/identify terminals
                          and optionally READ attendance (never writes to devices)
     probe-ems            detect which attendance protocol the EMS speaks
+    verify-ems           prove whether the EMS really ACCEPTS attendance for
+                         each device serial (handshake + empty ATTLOG + USER)
     set-token            store the EMS device token in the OS credential store
     delete-token         revoke/remove the stored EMS device token
     set-admin-password   set/change the dashboard admin password (PBKDF2 hash)
@@ -22,6 +24,7 @@ import argparse
 import getpass
 import ipaddress
 import sys
+import threading
 
 from . import __version__
 from .config import load_config
@@ -83,6 +86,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("probe-ems", help="detect the EMS attendance protocol (read-only)")
 
+    ver_p = sub.add_parser("verify-ems", help="prove the EMS accepts attendance for each serial")
+    ver_p.add_argument("--sn", default="", help="check one serial (default: every registered device)")
+    ver_p.add_argument("--no-users", action="store_true",
+                       help="skip publishing the device user table")
+
     sub.add_parser("set-token", help="store the EMS device token in the OS credential store")
     sub.add_parser("delete-token", help="remove the stored EMS device token")
     sub.add_parser("set-admin-password", help="set the dashboard admin password")
@@ -106,7 +114,8 @@ def main(argv: list[str] | None = None) -> int:
 
     handler = {
         "run": _cmd_run, "tray": _cmd_tray, "init-db": _cmd_init_db,
-        "scan": _cmd_scan, "probe-ems": _cmd_probe_ems, "set-token": _cmd_set_token,
+        "scan": _cmd_scan, "probe-ems": _cmd_probe_ems,
+        "verify-ems": _cmd_verify_ems, "set-token": _cmd_set_token,
         "delete-token": _cmd_delete_token,
         "set-admin-password": _cmd_set_admin_password,
         "backup": _cmd_backup, "export-diagnostics": _cmd_diagnostics,
@@ -228,6 +237,43 @@ def _cmd_probe_ems(config, args) -> int:
                        timeout=config.ems_timeout)
     print(report.human())
     return 0 if report.reachable else 1
+
+
+def _cmd_verify_ems(config, args) -> int:
+    """Ask the live EMS, serial by serial, what it actually accepts.
+
+    A green dashboard only means the EMS answered a handshake. This command
+    proves ingestion instead: it posts an EMPTY ATTLOG (no fake punches are
+    ever written) and, unless --no-users is given, publishes each terminal's
+    user table so the EMS can map a PIN to a real person.
+    """
+    from .database.repositories import open_migrated_database
+    from .ems.factory import build_ems_client
+    from .ems.verify import format_report, verify_ems_ingestion
+    from .security.secrets import SecretStore
+    from .service import BridgeContext
+    from .sync.worker import EmsStatus
+
+    db, repos = open_migrated_database(config.db_path)
+    try:
+        secret_store = SecretStore(config.data_dir)
+        from .config import SettingsView
+        ctx = BridgeContext(
+            version=__version__, config=config,
+            settings=SettingsView(config, repos["settings"]),
+            repos=repos, secret_store=secret_store,
+            ems_status=EmsStatus(), stop_event=threading.Event(),
+        )
+        from .sync.worker import SyncWorker
+        ctx.sync_worker = SyncWorker(ctx)
+        report = verify_ems_ingestion(
+            ctx, (args.sn or "").strip() or None,
+            push_users=False if args.no_users else None,
+        )
+        print(format_report(report))
+        return 0 if report.get("ok") else 1
+    finally:
+        db.close_all()
 
 
 def _cmd_set_token(config, args) -> int:

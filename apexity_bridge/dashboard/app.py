@@ -132,6 +132,11 @@ def create_app(ctx) -> Flask:
     def students_page():
         return render_template("students.html")
 
+    @app.route("/device-users")
+    @auth.login_required
+    def device_users_page():
+        return render_template("device_users.html")
+
     @app.route("/attendance")
     @auth.login_required
     def attendance_page():
@@ -167,7 +172,10 @@ def create_app(ctx) -> Flask:
             devices={**devices, "online_now": len(online_known)},
             students={"total": repos["students"].count(),
                       "active": repos["students"].count(active_only=True),
-                      "mappings": repos["mappings"].count()},
+                      "mappings": repos["mappings"].count(),
+                      "by_type": repos["students"].counts_by_type()},
+            device_users={"total": repos["device_users"].count(),
+                          "unmapped": repos["device_users"].unmapped_count()},
             events=events,
             queue_pending=repos["queue"].pending_count(),
             last_synced_at=repos["events"].last_synced_at(),
@@ -236,6 +244,18 @@ def create_app(ctx) -> Flask:
                 repos["devices"].remove(device_id)
                 repos["audit"].log(actor=actor, action="device.remove",
                                    entity="device", entity_id=str(device.get("serial_number")))
+            elif action == "ems-serial":
+                value = (request.form.get("ems_serial")
+                         or (request.is_json and (request.json or {}).get("ems_serial"))
+                         or "")
+                repos["devices"].set_ems_serial(device_id, str(value)[:100])
+                repos["devices"].set_users_pushed_hash(device_id, None)
+                repos["audit"].log(
+                    actor=actor, action="device.ems_serial",
+                    entity="device", entity_id=str(device.get("serial_number")),
+                    detail=f"EMS serial → {(str(value).strip() or '(hardware serial)')}")
+                if ctx.sync_worker:
+                    ctx.sync_worker.rebuild_client()
             elif action == "test":
                 return _device_test(ctx, device, repos)
             else:
@@ -313,27 +333,36 @@ def create_app(ctx) -> Flask:
         size = min(200, max(1, int(request.args.get("page_size") or 50)))
         active_q = request.args.get("active")
         active = None if active_q in (None, "", "all") else active_q == "1"
+        person_type = (request.args.get("person_type") or "").strip() or None
         rows, total = repos["students"].list(
             search=request.args.get("search") or None,
             class_name=request.args.get("class") or None,
             section=request.args.get("section") or None,
+            person_type=person_type,
             active=active, page=page, page_size=size,
             sort=request.args.get("sort") or "name",
             desc=request.args.get("order") == "desc",
         )
-        return ok(students=rows, total=total, page=page, page_size=size,
+        return ok(students=rows, people=rows, total=total, page=page, page_size=size,
                   classes=repos["students"].classes(),
+                  by_type=repos["students"].counts_by_type(),
                   roster_last_sync=settings_repo().get("roster_last_sync"),
                   roster_last_error=settings_repo().get("roster_last_error"))
+
+    @app.route("/api/people")
+    @auth.login_required
+    def api_people():
+        """Directory alias — students, teachers and staff in one list."""
+        return api_students()
 
     @app.route("/api/students/refresh", methods=["POST"])
     @auth.login_required
     def api_students_refresh():
-        from ..students.directory import refresh_roster
+        from ..students.directory import refresh_people
         from ..ems.base import EmsProtocolError, EmsAuthError, EmsUnavailableError
         repos["audit"].log(actor=auth.current_actor(), action="roster.refresh")
         try:
-            stats = refresh_roster(ctx.ems_client, repos)
+            stats = refresh_people(ctx.ems_client, repos)
         except EmsProtocolError as exc:
             return fail(str(exc), 502)
         except EmsAuthError as exc:
@@ -343,6 +372,96 @@ def create_app(ctx) -> Flask:
         except Exception as exc:
             return fail(f"roster refresh failed: {exc}", 502)
         return ok(stats=stats)
+
+    @app.route("/api/people/refresh", methods=["POST"])
+    @auth.login_required
+    def api_people_refresh():
+        return api_students_refresh()
+
+    # ----------------------------------------------------------- device users --
+    @app.route("/api/device-users")
+    @auth.login_required
+    def api_device_users():
+        page = max(1, int(request.args.get("page") or 1))
+        size = min(500, max(1, int(request.args.get("page_size") or 200)))
+        rows, total = repos["device_users"].list(
+            device_serial=request.args.get("device_serial") or None,
+            search=request.args.get("search") or None,
+            unmapped_only=request.args.get("unmapped") == "1",
+            page=page, page_size=size,
+        )
+        return ok(device_users=rows, total=total, page=page, page_size=size,
+                  unmapped=repos["device_users"].unmapped_count(),
+                  devices=repos["devices"].list_active())
+
+    @app.route("/api/device-users/read", methods=["POST"])
+    @auth.login_required
+    def api_device_users_read():
+        """Read one terminal's user table right now (read-only on the device)."""
+        payload = request.get_json(silent=True) or request.form
+        device_id = int(payload.get("device_id") or 0)
+        serial = str(payload.get("serial") or "").strip()
+        device = repos["devices"].get_by_id(device_id) if device_id else None
+        if device is None and serial:
+            device = repos["devices"].get_by_serial(serial)
+        if not device:
+            return fail("device not found", 404)
+        device_id = device["id"]
+        if ctx.collector is None:
+            return fail("collector is not running", 503)
+        try:
+            result = ctx.collector.refresh_users(device_id)
+        except ValueError as exc:
+            return fail(str(exc))
+        except Exception as exc:  # pragma: no cover - device dependent
+            return fail(f"could not read the device user table: {exc}", 502)
+        repos["audit"].log(actor=auth.current_actor(), action="device_users.read",
+                           entity="device", entity_id=str(device.get("serial_number")),
+                           detail=json.dumps(result, default=str)[:400])
+        if ctx.sync_worker:
+            ctx.sync_worker._next_users = 0.0
+            ctx.sync_worker.wake()
+        return ok(result=result)
+
+    @app.route("/api/device-users/push", methods=["POST"])
+    @auth.login_required
+    def api_device_users_push():
+        """Force publication of the cached user tables to the EMS."""
+        if ctx.sync_worker is None:
+            return fail("sync worker is not running", 503)
+        payload = request.get_json(silent=True) or request.form
+        device_id = payload.get("device_id")
+        if device_id:
+            device = repos["devices"].get_by_id(int(device_id))
+            if not device:
+                return fail("device not found", 404)
+            repos["devices"].set_users_pushed_hash(device["id"], None)
+        else:
+            for device in repos["devices"].list_active():
+                repos["devices"].set_users_pushed_hash(device["id"], None)
+        repos["audit"].log(actor=auth.current_actor(), action="device_users.push_requested")
+        ctx.sync_worker._next_users = 0.0
+        ctx.sync_worker.wake()
+        return ok(queued=True)
+
+    @app.route("/api/ems/verify", methods=["GET", "POST"])
+    @auth.login_required
+    def api_ems_verify():
+        """Live proof of what the EMS actually accepts, serial by serial.
+
+        Answers the question the dashboard cannot answer on its own: is the
+        server merely shaking hands, or does it genuinely accept attendance
+        for the serial this bridge pushes?
+        """
+        from ..ems.verify import verify_ems_ingestion
+
+        serial_override = ((request.args.get("sn") or "")
+                           or ((request.get_json(silent=True) or {}) or {}).get("sn", ""))
+        serial_override = str(serial_override).strip()
+        report = verify_ems_ingestion(ctx, serial_override or None)
+        repos["audit"].log(actor=auth.current_actor(), action="ems.verify",
+                           detail=json.dumps(report, default=str)[:800])
+        return ok(report=report)
 
     # --------------------------------------------------------------- mappings --
     @app.route("/api/mappings", methods=["GET", "POST"])
@@ -362,6 +481,17 @@ def create_app(ctx) -> Flask:
         except MappingError as exc:
             return fail(str(exc))
         return ok(mapping_id=mapping_id)
+
+    @app.route("/api/mappings/auto", methods=["POST"])
+    @auth.login_required
+    def api_mappings_auto():
+        """Bind every device user whose PIN/name matches exactly one person."""
+        payload = request.get_json(silent=True) or request.form
+        serial = (payload.get("device_serial") or "").strip() or None
+        apply_changes = str(payload.get("apply", "1")).lower() not in ("0", "false", "no")
+        result = mapping_service().auto_map(device_serial=serial, apply=apply_changes)
+        return ok(result=result, matched=len(result["matched"]),
+                  ambiguous=len(result["ambiguous"]), unmatched=len(result["unmatched"]))
 
     @app.route("/api/mappings/<int:mapping_id>", methods=["DELETE"])
     @auth.login_required

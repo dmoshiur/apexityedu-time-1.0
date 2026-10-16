@@ -1,7 +1,7 @@
 # Acceptance Test Plan — real K40 + live EMS
 
 Automated unit/integration coverage is in `tests/` (run:
-`scripts/run_tests.sh` — **116 tests**). This plan is the **real-device
+`scripts/run_tests.sh` — **209 tests**). This plan is the **real-device
 gate**: it must be executed on site with the actual K40 and the actual EMS
 before the bridge is declared production-ready. Unit tests passing never
 substitute for hardware verification.
@@ -26,12 +26,18 @@ Legend: ✅ covered by automated tests — still verify on hardware · 🔧 hard
 | 14 | Two K40s with distinct serials | ✅ `test_two_distinct_serials_are_two_devices` | Connect a second K40, scan. | Two rows, correct serials/IPs; events attribute to the right device; iClock pushes go under each device's own SN. |
 | 15 | Discovered but not trusted | ✅ `test_new_terminal_becomes_pending_not_trusted`, `test_stranger_at_old_ip_is_refused` | Put an *unregistered* ZKTeco at the old IP of a registered device. | Collector refuses (`identity mismatch` audit entry); the stranger appears as `pending` only; zero records flow under the old device's identity. |
 | 16 | Simulated device / protocol fixture | ✅ the whole suite runs on `FakeDeviceAdapter` + fake iClock/REST servers | `scripts/run_tests.sh` | CI/development without hardware. |
+| 17 | Device users are visible and publishable 🔧 | ✅ `test_collector_caches_device_users`, `test_worker_publishes_users_and_skips_unchanged` | Open **Device Users → Read from device**, then **Publish to ApexityEdu**. | Every person enrolled on the K40 is listed with PIN + name; the EMS receives a `USER` table (or `POST /devices/users`) and can show them. Overview shows `0` unmapped after binding. |
+| 18 | "Everything is green but nothing arrives" 🔧 | ✅ `test_handshake_success_is_not_ingestion_proof`, `test_probe_attlog_path_reports_exact_server_reply` | Run `python -m apexity_bridge verify-ems` on the school PC. | Per-device report: handshake / presence / **empty ATTLOG POST** / USER table, each with the server's raw reply. `Ingestion verified` on the Overview flips only after a real acceptance — a bare handshake must never be reported as success. |
+| 19 | EMS registered a device under another serial 🔧 | ✅ `test_ems_serial_override_is_used_for_every_push` | Set **Devices → EMS serial…** to the serial shown in apexityedu.com → Biometric Devices; re-run `verify-ems`. | ATTLOG, USER, handshake and presence all use the EMS serial while identity/IP repair keeps using the hardware serial; punches appear in ApexityEdu. |
+| 20 | Teachers and staff punch too 🔧 | ✅ `test_people_directory_covers_teachers_and_staff`, `test_mapping_accepts_any_person_type` | Refresh **People**; filter by *Teachers* / *Staff*; bind a teacher's PIN on the Device Users page. | Students, teachers and staff all download from the EMS (`person_type` shown); a teacher's punch is attributed to the teacher, not dropped. |
 
 ## Sign-off checklist
 
-- [ ] `probe-ems` on the school PC identifies the live EMS protocol and the bridge is configured with it (`EMS_PROTOCOL` in Settings or `.env`).
-- [ ] Student roster loads from the real EMS; classes/sections shown.
-- [ ] All enrolled device users mapped to students (0 unmapped, 0 conflicts).
-- [ ] Scenarios 1–16 executed and ticked above.
+- [ ] `verify-ems` on the school PC proves the EMS **accepts** ATTLOG for every registered serial (not merely that it answers a handshake).
+- [ ] `probe-ems` also identifies the live EMS protocol, and the bridge is configured with it (`EMS_PROTOCOL` in Settings or `.env`).
+- [ ] People directory loads from the real EMS: students **and** teachers **and** staff, with `person_type` shown.
+- [ ] Device users are read from every K40 and published to the EMS.
+- [ ] **0 unmapped** device users, 0 conflicts — every PIN is bound to a person.
+- [ ] Scenarios 1–20 executed and ticked above.
 - [ ] One full school day comparison: K40 screen count = bridge collected = EMS received.
 - [ ] Backup + restore drill performed (`Backup database now`, restore per TROUBLESHOOTING.md).

@@ -77,7 +77,8 @@ async function loadOverview() {
       `${d.devices.pending} discovered pending · ${d.devices.disabled} disabled`;
     document.getElementById("st-students").textContent = d.students.total;
     document.getElementById("st-mappings").textContent =
-      `${d.students.active} active · ${d.students.mappings} biometric mappings`;
+      `${d.students.active} active · ${d.students.mappings} biometric mappings` +
+      (d.device_users ? ` · ${d.device_users.unmapped || 0} device users unmapped` : "");
     document.getElementById("st-pending").textContent = d.events.pending + d.events.failed;
     document.getElementById("st-queue").textContent = `${d.queue_pending} queued tasks`;
     document.getElementById("st-synced").textContent = d.events.synced;
@@ -197,10 +198,12 @@ async function loadStudents() {
   const cls = document.getElementById("filter-class").value;
   const sec = document.getElementById("filter-section").value;
   const act = document.getElementById("filter-active").value;
+  const ptype = document.getElementById("filter-type").value;
   const params = new URLSearchParams({
     page: st.page, page_size: st.pageSize, sort: st.sort, order: st.order, active: act,
   });
   if (q) params.set("search", q);
+  if (ptype) params.set("person_type", ptype);
   if (cls) params.set("class", cls);
   if (sec) params.set("section", sec);
   const d = await api("/api/students?" + params);
@@ -212,8 +215,10 @@ async function loadStudents() {
   } else {
     errBox.classList.add("hidden");
   }
+  const byType = d.by_type || {};
+  const mix = `${byType.student || 0} students · ${(byType.teacher || 0) + (byType.staff || 0) + (byType.other || 0)} teachers/staff`;
   document.getElementById("roster-status").textContent =
-    d.roster_last_sync ? `roster updated ${fmtAgo(d.roster_last_sync)} · ${d.total} students` : `${d.total} students`;
+    d.roster_last_sync ? `roster updated ${fmtAgo(d.roster_last_sync)} · ${d.total} people (${mix})` : `${d.total} people (${mix})`;
 
   // class/section filters from real data
   const clsSel = document.getElementById("filter-class");
@@ -239,8 +244,10 @@ async function loadStudents() {
   const tbody = document.querySelector("#students-table tbody");
   tbody.innerHTML = d.students.map(s => `<tr>
     <td>${esc(s.name)}</td><td>${esc(s.ems_student_id)}</td>
-    <td>${esc(s.admission_no || "—")}</td><td>${esc(s.roll_no || "—")}</td>
+    <td><span class="tag ${esc(s.person_type || "student")}">${esc(s.person_type || "student")}</span></td>
+    <td>${esc(s.admission_no || s.employee_no || "—")}</td><td>${esc(s.roll_no || "—")}</td>
     <td>${esc(s.class_name || "—")}</td><td>${esc(s.section || "—")}</td>
+    <td>${esc(s.designation || s.department || "—")}</td>
     <td><span class="tag ${s.active ? "active" : "inactive"}">${s.active ? "active" : "inactive"}</span></td>
     <td>${esc(s.device_users || "—")}</td>
     <td>${s.device_users
@@ -253,7 +260,7 @@ async function loadStudents() {
 
   const dl = document.getElementById("students-datalist");
   dl.innerHTML = d.students.map(s =>
-    `<option value="${esc(s.ems_student_id)}">${esc(s.name)} (${esc(s.class_name || "?")}${esc(s.section || "")}, ID ${esc(s.ems_student_id)})</option>`).join("");
+    `<option value="${esc(s.ems_student_id)}">${esc(s.name)} (${esc(s.person_type || "student")}, ${esc(s.class_name || s.designation || "?")}${esc(s.section || "")}, ID ${esc(s.ems_student_id)})</option>`).join("");
 
   await loadMappingReview();
 }
@@ -442,12 +449,12 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("student-search").addEventListener("input", () => {
       clearTimeout(t); t = setTimeout(() => { st.page = 1; loadStudents(); }, 300);
     });
-    for (const id of ["filter-class", "filter-section", "filter-active"])
+    for (const id of ["filter-class", "filter-section", "filter-active", "filter-type"])
       document.getElementById(id).addEventListener("change", () => { st.page = 1; loadStudents(); });
     document.getElementById("btn-refresh-roster").addEventListener("click", async () => {
       try {
         const d = await api("/api/students/refresh", { method: "POST" });
-        flash(`Roster refreshed: ${d.stats.fetched} students (${d.stats.inserted} new).`);
+        flash(`Directory refreshed: ${d.stats.fetched} people (${d.stats.inserted} new).`);
       } catch (err) { flash(err.message, true); }
       loadStudents();
     });
@@ -529,6 +536,133 @@ document.addEventListener("DOMContentLoaded", () => {
     loadLogs();
     loadAppLog();
   }
+
+if (page === "device-users") {
+    const dlg = document.getElementById("du-map-dialog");
+
+    async function loadPeople() {
+      const d = await api("/api/people?page_size=200");
+      document.getElementById("du-people").innerHTML = (d.people || d.students || [])
+        .map(s => `<option value="${esc(s.ems_student_id)}">${esc(s.name)} — ${esc(s.person_type || "student")} (ID ${esc(s.ems_student_id)})</option>`)
+        .join("");
+    }
+
+    async function loadDeviceUsers() {
+      const params = new URLSearchParams({});
+      const dev = document.getElementById("du-device").value;
+      const q = document.getElementById("du-search").value.trim();
+      const un = document.getElementById("du-unmapped").value;
+      if (dev) params.set("device_serial", dev);
+      if (q) params.set("search", q);
+      if (un) params.set("unmapped", un);
+      const d = await api("/api/device-users?" + params);
+
+      const sel = document.getElementById("du-device");
+      if (!sel.dataset.loaded) {
+        for (const dev of (d.devices || [])) {
+          const opt = document.createElement("option");
+          opt.value = dev.serial_number;
+          opt.textContent = `${dev.label || dev.serial_number} (${dev.serial_number})`;
+          sel.appendChild(opt);
+        }
+        sel.dataset.loaded = "1";
+      }
+
+      document.getElementById("du-status").textContent =
+        `${d.total} users · ${d.unmapped} not mapped to a person`;
+
+      const tbody = document.querySelector("#du-table tbody");
+      tbody.innerHTML = (d.device_users || []).map(u => `<tr>
+        <td>${esc(u.device_label || u.device_serial)}</td>
+        <td><code>${esc(u.user_id)}</code></td>
+        <td>${esc(u.name || "<em>no name on device</em>")}</td>
+        <td>${(u.privilege || 0) >= 14 ? "admin" : "user"}</td>
+        <td>${esc(u.punch_count || 0)}</td>
+        <td>${u.last_punch_at ? esc(fmtTs(u.last_punch_at)) : "—"}</td>
+        <td>${u.person_name
+              ? esc(u.person_name)
+              : '<span class="tag unmapped">NOT MAPPED</span>'}</td>
+        <td>${esc(u.person_type || "—")}</td>
+        <td>${u.mapping_id
+              ? `<button data-du-unmap="${u.mapping_id}">unmap</button>`
+              : `<button class="primary" data-du-map="${esc(u.device_serial)}" data-user="${esc(u.user_id)}">map…</button>`}</td>
+      </tr>`).join("")
+        || `<tr><td colspan="9" class="muted">No device users cached yet. Use “Read from device” on a registered K40 — the bridge only mirrors what the terminal reports.</td></tr>`;
+    }
+
+    document.getElementById("du-device").addEventListener("change", loadDeviceUsers);
+    document.getElementById("du-unmapped").addEventListener("change", loadDeviceUsers);
+    document.getElementById("du-search").addEventListener("input", loadDeviceUsers);
+
+    document.getElementById("du-read").addEventListener("click", async () => {
+      const serial = document.getElementById("du-device").value;
+      if (!serial) { flash("Pick one device first.", true); return; }
+      try {
+        const d = await api("/api/device-users/read", { method: "POST", json: { serial } });
+        flash(`Read ${d.result.on_device} users from the device (${d.result.inserted} new).`);
+        loadDeviceUsers();
+      } catch (err) { flash(err.message, true); }
+    });
+
+    document.getElementById("du-push").addEventListener("click", async () => {
+      try {
+        await api("/api/device-users/push", { method: "POST", json: {} });
+        flash("Queued — the bridge is publishing the user tables to ApexityEdu now.");
+      } catch (err) { flash(err.message, true); }
+    });
+
+    document.getElementById("du-auto").addEventListener("click", async () => {
+      const serial = document.getElementById("du-device").value;
+      try {
+        const d = await api("/api/mappings/auto", {
+          method: "POST", json: serial ? { device_serial: serial } : {},
+        });
+        const amb = d.result.ambiguous || [];
+        flash(`Auto-mapped ${d.matched} device user(s).` +
+              (amb.length ? ` ${amb.length} left ambiguous — map those by hand.` : ""));
+        loadDeviceUsers();
+      } catch (err) { flash(err.message, true); }
+    });
+
+    document.getElementById("du-table").addEventListener("click", (e) => {
+      const map = e.target.closest("button[data-du-map]");
+      if (map) {
+        dlg.querySelector('[name=device_serial]').value = map.dataset.duMap;
+        dlg.querySelector('[name=device_user_id]').value = map.dataset.user;
+        dlg.querySelector('[name=ems_student_id]').value = "";
+        dlg.showModal();
+        return;
+      }
+      const un = e.target.closest("button[data-du-unmap]");
+      if (un) {
+        api(`/api/mappings/${un.dataset.duUnmap}`, { method: "DELETE" })
+          .then(() => { flash("Mapping removed."); loadDeviceUsers(); })
+          .catch(err => flash(err.message, true));
+      }
+    });
+
+    document.getElementById("du-map-cancel").addEventListener("click", () => dlg.close());
+    document.getElementById("du-map-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      try {
+        await api("/api/mappings", { method: "POST", json: {
+          device_serial: f.device_serial.value,
+          device_user_id: f.device_user_id.value,
+          ems_student_id: f.ems_student_id.value,
+        }});
+        dlg.close();
+        flash("Device user bound to a person. Unsaved punches were re-resolved too.");
+        loadDeviceUsers();
+      } catch (err) { flash(err.message, true); }
+    });
+
+    loadPeople();
+    loadDeviceUsers();
+    setInterval(loadDeviceUsers, 20000);
+  }
+
+  if (page === "settings") {
 
   if (page === "settings") {
     document.getElementById("settings-form").addEventListener("submit", saveSettings);

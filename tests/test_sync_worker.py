@@ -196,8 +196,12 @@ def test_roster_refresh_via_queue(ctx, rest_server):
 
     ctx.repos["queue"].enqueue("fetch_students")
     worker._process_queue()
-    assert ctx.repos["students"].count() == 3        # full pagination consumed
+    # students + teachers + staff — the whole directory, not just students
+    assert ctx.repos["students"].count() == 6        # full pagination consumed
     assert ctx.repos["students"].get("S1003")["active"] == 0
+    assert ctx.repos["students"].get("T2001")["person_type"] == "teacher"
+    assert ctx.repos["students"].counts_by_type()["teacher"] == 2
+    assert ctx.repos["students"].counts_by_type()["staff"] == 1
     assert ctx.repos["settings"].get("roster_last_sync")
     assert worker.status.roster_supported
 

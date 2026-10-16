@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block page %}device-users{% endblock %}
+{% block title %}Device Users — ApexityEdu Bridge{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <select id="du-device"><option value="">All devices</option></select>
+  <input id="du-search" type="search" placeholder="Search PIN / name / person…">
+  <select id="du-unmapped"><option value="">Everyone</option><option value="1">Only unmapped</option></select>
+  <button id="du-read" class="primary">⟳ Read from device</button>
+  <button id="du-push">⬆ Publish to ApexityEdu</button>
+  <button id="du-auto">⚡ Auto-map matches</button>
+  <span id="du-status" class="muted"></span>
+</div>
+
+<div id="du-notice" class="notice hidden"></div>
+
+<div class="card">
+  <p class="muted">
+    These are the people enrolled <em>on the terminal</em> (PIN + name), read over the ZK
+    protocol — read-only, no templates and no passwords. A K40 only ever reports a PIN, so
+    until each PIN is bound to a person, neither the bridge nor ApexityEdu can say who
+    punched. Bind them here (or with the CSV import on the People page).
+  </p>
+  <table id="du-table">
+    <thead><tr>
+      <th>Device</th><th>PIN</th><th>Name on device</th><th>Role</th>
+      <th>Punches</th><th>Last punch</th><th>Mapped to</th><th>Type</th><th>Action</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<dialog id="du-map-dialog">
+  <form id="du-map-form">
+    <h3>Bind device user to person</h3>
+    <input type="hidden" name="device_serial">
+    <label>Device user ID (PIN) <input name="device_user_id" required></label>
+    <label>Person (EMS ID)
+      <input name="ems_student_id" list="du-people" required placeholder="type to search…">
+    </label>
+    <datalist id="du-people"></datalist>
+    <div class="dialog-actions">
+      <button type="submit" class="primary">Save mapping</button>
+      <button type="button" id="du-map-cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}

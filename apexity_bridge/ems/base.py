@@ -37,6 +37,13 @@ class EmsProtocolError(EmsError):
 # ------------------------------------------------------------------ DTOs ----
 @dataclass(frozen=True)
 class StudentInfo:
+    """One person in the EMS directory.
+
+    ``person_type`` is what makes teachers and non-teaching staff first-class
+    citizens: a K40 does not care who punches, so the roster the bridge pulls
+    must contain everybody who is expected to punch in.
+    """
+
     ems_student_id: str
     name: str
     admission_no: str | None = None
@@ -44,7 +51,46 @@ class StudentInfo:
     class_name: str | None = None
     section: str | None = None
     active: bool = True
+    person_type: str = "student"          # student | teacher | staff | other
+    employee_no: str | None = None
+    designation: str | None = None
+    department: str | None = None
     raw: dict = field(default_factory=dict)
+
+    def as_cache_row(self) -> dict:
+        return {
+            "ems_student_id": self.ems_student_id,
+            "name": self.name,
+            "admission_no": self.admission_no,
+            "roll_no": self.roll_no,
+            "class_name": self.class_name,
+            "section": self.section,
+            "active": self.active,
+            "person_type": self.person_type,
+            "employee_no": self.employee_no,
+            "designation": self.designation,
+            "department": self.department,
+            "raw": self.raw,
+        }
+
+
+# Historical name kept: the directory is people, not only students.
+PersonInfo = StudentInfo
+
+PERSON_TYPES = ("student", "teacher", "staff", "other")
+
+
+@dataclass(frozen=True)
+class UserSyncOutcome:
+    """Result of pushing one terminal's user table to the EMS."""
+
+    accepted: int = 0
+    detail: str = ""
+    fatal: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.fatal is None
 
 
 @dataclass(frozen=True)
@@ -86,7 +132,12 @@ class UploadOutcome:
 
 
 class EmsClient(Protocol):
-    """The contract the sync worker relies upon."""
+    """The contract the sync worker relies upon.
+
+    ``fetch_people`` and ``push_users`` are optional capabilities: the worker
+    checks for them with ``getattr`` so a minimal EMS (or a test double) that
+    only ingests attendance keeps working.
+    """
 
     protocol_name: str
 
@@ -94,4 +145,7 @@ class EmsClient(Protocol):
     def register_device(self, *, serial: str, model: str | None,
                         firmware: str | None, label: str | None) -> RegisterResult: ...
     def fetch_students(self, cursor: str | None = None) -> RosterPage: ...
-    def push_attendance(self, events: list[dict]) -> UploadOutcome: ...
+    def push_attendance(self, events: list[dict], *, serial: str | None = None) -> UploadOutcome: ...
+    # optional
+    def fetch_people(self, cursor: str | None = None) -> RosterPage: ...
+    def push_users(self, serial: str, users: list[dict]) -> UserSyncOutcome: ...

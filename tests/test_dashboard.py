@@ -271,3 +271,71 @@ def test_api_unknown_device_is_404(client):
     resp = client.post("/api/devices/99999/register",
                        headers={"X-CSRF-Token": token})
     assert resp.status_code == 404
+
+
+# ------------------------------------------------------------- device users --
+def test_device_users_page_and_api(client, ctx):
+    device = seed_device(ctx.repos, serial="SN-DASH")
+    ctx.repos["device_users"].replace_for("SN-DASH", [
+        {"user_id": "1", "name": "Rahim", "privilege": 0},
+        {"user_id": "2", "name": "Karim Sir", "privilege": 0},
+    ])
+    seed_students(ctx.repos)
+    ctx.repos["mappings"].upsert(device_serial="SN-DASH", device_user_id="1",
+                                 ems_student_id="S1001", mapped_by="admin")
+    token = _login(client)
+
+    assert client.get("/device-users").status_code == 200
+
+    d = client.get("/api/device-users").get_json()
+    assert d["total"] == 2
+    assert d["unmapped"] == 1
+    rows = {r["user_id"]: r for r in d["device_users"]}
+    assert rows["1"]["person_name"] == "Afnan Rahman"
+    assert rows["2"]["mapping_id"] is None
+
+    d = client.get("/api/device-users?unmapped=1").get_json()
+    assert d["total"] == 1 and d["device_users"][0]["user_id"] == "2"
+
+    overview = client.get("/api/overview").get_json()
+    assert overview["device_users"]["total"] == 2
+    assert overview["device_users"]["unmapped"] == 1
+    assert overview["students"]["by_type"]["student"] == 3
+
+
+def test_people_api_filters_by_person_type(client, ctx):
+    ctx.repos["students"].upsert_many([
+        {"ems_student_id": "S1", "name": "Anika", "person_type": "student"},
+        {"ems_student_id": "T1", "name": "Sir Alam", "person_type": "teacher",
+         "designation": "Headmaster"},
+    ])
+    token = _login(client)
+    d = client.get("/api/people?person_type=teacher").get_json()
+    assert d["total"] == 1
+    assert d["people"][0]["designation"] == "Headmaster"
+    assert d["by_type"]["teacher"] == 1
+
+
+def test_ems_serial_action(client, ctx):
+    device = seed_device(ctx.repos, serial="SN-HW")
+    token = _login(client)
+    resp = client.post(f"/api/devices/{device['id']}/ems-serial",
+                       data={"ems_serial": "APEX-9"},
+                       headers={"X-CSRF-Token": token})
+    assert resp.status_code == 200
+    assert ctx.repos["devices"].get_by_id(device["id"])["ems_serial"] == "APEX-9"
+
+
+def test_ems_verify_endpoint_reports_a_problem(client, ctx):
+    """No EMS configured → the report must say so instead of claiming success."""
+    seed_device(ctx.repos, serial="SN-VERIFY")
+    token = _login(client)
+    d = client.get("/api/ems/verify", headers={"X-CSRF-Token": token}).get_json()
+    assert d["ok"] is True                 # the endpoint itself worked
+    report = d["report"]
+    # no EMS client is configured in this fixture → the report must admit it
+    # rather than pretending an ingestion check happened.
+    if report.get("error"):
+        assert "no EMS client" in report["error"]
+    else:
+        assert report["devices"] and report["ok"] is False
