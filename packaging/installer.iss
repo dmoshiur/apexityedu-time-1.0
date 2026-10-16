@@ -5,7 +5,7 @@
 
 #define MyAppName      "ApexityEdu Smart Attendance Bridge"
 #define MyAppShort     "ApexityEdu Bridge"
-#define MyAppVersion   "1.0.1"
+#define MyAppVersion   "1.0.2"
 #define MyAppPublisher "ApexityEdu"
 #define MyAppURL       "https://apexityedu.com"
 #define MyAppExeName   "ApexityEduBridge.exe"

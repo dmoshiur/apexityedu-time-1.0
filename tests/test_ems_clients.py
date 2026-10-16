@@ -216,3 +216,77 @@ def test_probe_unreachable_reports_errors():
     assert report.errors
     assert report.recommended_protocol is None
     assert "iClock" in report.human() or "iClock endpoint" in report.human()
+
+
+@pytest.mark.parametrize("reply", [
+    "", "<html>Login</html>", '{"ok":true}', "GET OPTION FROM: SN-A\nStamp=9999",
+    "ERROR: table unknown", "not OK: 1", "OK: nope", "OK: -1", "OK: 1 extra",
+    "OK: 4", "OK: 1\nERROR: failed", "OKAY",
+])
+def test_iclock_never_accepts_unexpected_upload_reply(iclock_server, reply):
+    iclock_server.upload_reply = reply
+    with pytest.raises(EmsProtocolError):
+        IclockEmsClient(iclock_server.url).push_attendance(_events(3))
+
+
+@pytest.mark.parametrize("reply,accepted,partial", [
+    ("OK", (1, 2, 3), None), ("ok: 3", (1, 2, 3), None),
+    ("OK: 0", (), 0), ("OK: 2", (1, 2), 2),
+    ("\ufeffOK: 3\r\n", (1, 2, 3), None),
+])
+def test_iclock_accepts_only_explicit_acknowledgement(iclock_server, reply, accepted, partial):
+    iclock_server.upload_reply = reply
+    outcome = IclockEmsClient(iclock_server.url).push_attendance(_events(3))
+    assert outcome.accepted_ids == accepted
+    assert outcome.partial_index == partial
+
+
+@pytest.mark.parametrize("status", [201, 204, 302, 400, 404])
+def test_iclock_upload_requires_http_200(iclock_server, status):
+    iclock_server.upload_reply = "OK"
+    iclock_server.upload_status = status
+    with pytest.raises(EmsProtocolError, match=f"HTTP {status}"):
+        IclockEmsClient(iclock_server.url).push_attendance(_events(1))
+
+
+def test_iclock_does_not_follow_upload_redirect(iclock_server):
+    # Following this would turn POST into GET and return a valid handshake.
+    iclock_server.upload_location = iclock_server.url + "/iclock/cdata?SN=LOGIN"
+    with pytest.raises(EmsProtocolError, match="HTTP 302"):
+        IclockEmsClient(iclock_server.url).push_attendance(_events(1))
+    assert "LOGIN" not in iclock_server.handshakes
+
+
+@pytest.mark.parametrize("body", ["", "<html>Login</html>", "ERROR: denied", "OK: 1"])
+def test_iclock_poll_rejects_invalid_replies(iclock_server, body):
+    iclock_server.poll_body = body
+    with pytest.raises(EmsProtocolError, match="presence poll"):
+        IclockEmsClient(iclock_server.url).poll_commands("SN-A")
+
+
+def test_iclock_commands_are_only_logged(iclock_server, monkeypatch):
+    from unittest.mock import Mock
+    warning = Mock()
+    monkeypatch.setattr("apexity_bridge.ems.iclock.log.warning", warning)
+    iclock_server.poll_body = "C:1:DATA QUERY USERINFO\nC:2:CLEAR DATA"
+    commands = IclockEmsClient(iclock_server.url).poll_commands("SN-A")
+    assert len(commands) == 2
+    assert warning.call_count == 2
+    assert "not executed" in warning.call_args.args[0]
+    assert iclock_server.accepted == []
+
+
+def test_iclock_registration_preserves_auth_error(iclock_server):
+    iclock_server.rejected_serials.add("SN-A")
+    with pytest.raises(EmsAuthError):
+        IclockEmsClient(iclock_server.url).register_device(
+            serial="SN-A", model=None, firmware=None, label=None)
+
+
+def test_iclock_upload_error_redacts_token(iclock_server):
+    token = "private/key+123"
+    iclock_server.upload_reply = "denied token=" + token
+    with pytest.raises(EmsProtocolError) as error:
+        IclockEmsClient(iclock_server.url, auth_token=token).push_attendance(_events(1))
+    assert token not in str(error.value)
+    assert "[REDACTED]" in str(error.value)
