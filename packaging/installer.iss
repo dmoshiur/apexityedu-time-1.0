@@ -5,7 +5,7 @@
 
 #define MyAppName      "ApexityEdu Smart Attendance Bridge"
 #define MyAppShort     "ApexityEdu Bridge"
-#define MyAppVersion   "1.0.0"
+#define MyAppVersion   "1.0.1"
 #define MyAppPublisher "ApexityEdu"
 #define MyAppURL       "https://apexityedu.com"
 #define MyAppExeName   "ApexityEduBridge.exe"
@@ -85,6 +85,7 @@ Name: "{commonappdata}\ApexityEduBridge\backups"; Permissions: users-modify
 Filename: "{app}\{#MyAppExeName}"; Parameters: "init-db"; StatusMsg: "Preparing the local database…"; Flags: runhidden waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Parameters: "service install"; StatusMsg: "Registering Windows auto-start…"; Flags: runhidden waituntilterminated; Tasks: autostart
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppShort} now"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: IsUpdate
 
 [UninstallRun]
 Filename: "{app}\{#MyAppExeName}"; Parameters: "service stop"; Flags: runhidden waituntilterminated; RunOnceId: "StopBridge"
@@ -92,6 +93,11 @@ Filename: "{app}\{#MyAppExeName}"; Parameters: "service uninstall"; Flags: runhi
 Filename: "{cmd}"; Parameters: "/C taskkill /IM {#MyAppExeName} /F"; Flags: runhidden waituntilterminated; RunOnceId: "KillExe"
 
 [Code]
+function IsUpdate(): Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
+
 function InitializeSetup(): Boolean;
 begin
   Result := True;

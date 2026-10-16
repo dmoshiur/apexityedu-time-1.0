@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QFormLayout,
 )
 
+from .. import __version__
+from .. import updater
 from ..resources import tray_icon_path
 from .facade import DesktopFacade, FacadeError
 from .ipc import start_ipc_server
@@ -941,6 +943,7 @@ class LoginDialog(QDialog):
 # ----------------------------------------------------------- main window --
 class MainWindow(QMainWindow):
     show_requested = Signal()
+    update_progress = Signal(int)
 
     def __init__(self, service, facade: DesktopFacade):
         super().__init__()
@@ -959,6 +962,24 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         outer.addWidget(TitleBar(self))
+
+        update_bar = QHBoxLayout()
+        self.update_label = QLabel(f"  Version {__version__}")
+        self.update_button = QPushButton("Check for updates")
+        self.update_button.clicked.connect(self._update_clicked)
+        update_bar.addWidget(self.update_label)
+        update_bar.addStretch()
+        update_bar.addWidget(self.update_button)
+        outer.addLayout(update_bar)
+        self._available_update = None
+        self._update_worker = None
+        self._pending_installer = None
+        self.update_progress.connect(
+            lambda percent: self.update_label.setText(f"Downloading update… {percent}%"))
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(lambda: self._check_update(False))
+        self.update_timer.start(6 * 60 * 60 * 1000)
+        QTimer.singleShot(10000, lambda: self._check_update(False))
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -997,6 +1018,79 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self._tick)
         self.timer.start(5000)
         self._nav("overview")
+
+    def _update_clicked(self) -> None:
+        if self._available_update is None:
+            self._check_update(True)
+            return
+        if not updater.is_windows() or not updater.is_frozen():
+            _info(self, "In-app installation is available in the installed Windows app only.")
+            return
+        if not _ask(self, "Download and install the update? The bridge will close during "
+                          "installation and reopen afterwards. Your data and settings are kept."):
+            return
+        release = self._available_update
+        self._start_update_job(
+            lambda: updater.download_update(release, self.update_progress.emit),
+            lambda path: setattr(self, "_pending_installer", path))
+
+    def _start_update_job(self, fn, done) -> None:
+        if self._update_worker is not None:
+            return
+        self.update_button.setEnabled(False)
+        worker = Worker(fn)
+        self._update_worker = worker
+        worker.done.connect(done)
+        worker.failed.connect(self._update_failed)
+        worker.finished.connect(self._update_finished)
+        worker.start()
+
+    def _update_finished(self) -> None:
+        worker = self._update_worker
+        self._update_worker = None
+        self.update_button.setEnabled(True)
+        if worker:
+            worker.deleteLater()
+        if self._pending_installer is not None:
+            installer = self._pending_installer
+            self._pending_installer = None
+            self._install_update(installer)
+
+    def _check_update(self, manual: bool) -> None:
+        if self._update_worker is not None:
+            return
+        self.update_label.setText("Checking for updates…")
+        self._start_update_job(updater.check_update,
+                               lambda release: self._update_checked(release, manual))
+
+    def _update_checked(self, release, manual: bool) -> None:
+        self._available_update = release
+        if release:
+            self.update_label.setText(f"Update available: {release.version}")
+            self.update_button.setText("Download and install update")
+        else:
+            self.update_label.setText(f"Version {__version__} — up to date")
+            self.update_button.setText("Check for updates")
+            if manual:
+                _info(self, "You already have the latest version.")
+
+    def _update_failed(self, message: str) -> None:
+        log.warning("Update failed: %s", message)
+        self.update_label.setText("Update failed — check your connection and retry")
+        # No disruptive dialogs for automatic offline checks.
+        self.update_button.setText("Retry update" if self._available_update else "Check for updates")
+
+    def _install_update(self, installer) -> None:
+        try:
+            updater.launch_update(installer)
+        except Exception as exc:
+            self._update_failed(str(exc))
+            _warn(self, f"Could not start installer: {exc}")
+            return
+        self.timer.stop()
+        self.update_timer.stop()
+        self.service.stop()
+        QApplication.instance().quit()
 
     def _nav(self, key: str) -> None:
         self.stack.setCurrentWidget(self.pages[key])
@@ -1077,6 +1171,9 @@ def run_desktop(service, *, show_window: bool = True) -> int:
             os.system(f'xdg-open "{folder}"')
 
     def quit_app() -> None:
+        if window._update_worker is not None:
+            _info(window, "Please wait for the update operation to finish before exiting.")
+            return
         tray.hide()
         service.stop()
         app.quit()

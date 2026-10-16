@@ -39,6 +39,9 @@ $VenvPy = Join-Path $Venv "Scripts\python.exe"
 & $VenvPy -m pip install -r requirements.txt
 & $VenvPy -m pip install -r requirements-packaging.txt
 
+& $VenvPy -m scripts.release_metadata
+if ($LASTEXITCODE -ne 0) { throw "Version synchronization failed" }
+
 Write-Step "Icons"
 & $VenvPy (Join-Path $Root "packaging\make_icons.py")
 
@@ -75,7 +78,8 @@ if (-not $Iscc) {
 & $Iscc (Join-Path $Root "packaging\installer.iss")
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
 
-$Setup = Join-Path $Dist "ApexityEduBridge-Setup-1.0.0.exe"
+$Version = & $VenvPy -c "from apexity_bridge import __version__; print(__version__)"
+$Setup = Join-Path $Dist "ApexityEduBridge-Setup-$Version.exe"
 Write-Host @"
 
 Done.
@@ -85,3 +89,6 @@ Done.
 Double-click the installer on the school PC. After setup, the Start Menu
 and Desktop shortcuts show the ApexityEdu logo.
 "@ -ForegroundColor Green
+
+& $VenvPy -m scripts.release_metadata
+if ($LASTEXITCODE -ne 0) { throw "Update manifest generation failed" }
