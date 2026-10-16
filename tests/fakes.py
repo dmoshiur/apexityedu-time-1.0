@@ -36,6 +36,13 @@ class FakeIclockServer:
         self.accepted: list[dict] = []
         self.seen: set[tuple] = set()
         self.handshakes: list[str] = []
+        self.polls: list[str] = []
+        self.rejected_serials: set[str] = set()
+        self.poll_status = 200
+        self.poll_body = "OK"
+        self.upload_reply: str | None = None
+        self.upload_status = 200
+        self.upload_location: str | None = None
         self.mode = "ok"          # ok | ok_count | error | http500 | partial | silent
         self.duplicates_accept = True
 
@@ -47,6 +54,8 @@ class FakeIclockServer:
                 if parsed.path.endswith("/cdata"):
                     sn = parse_qs(parsed.query).get("SN", [""])[0]
                     server.handshakes.append(sn)
+                    if sn in server.rejected_serials:
+                        return self._reply(403, "serial rejected")
                     if server.mode == "http500":
                         return self._reply(500, "boom")
                     # Real iClock handshake responses are a GET OPTION block;
@@ -56,13 +65,23 @@ class FakeIclockServer:
                         "GET OPTION FROM: APEXITY-FAKE\nStamp=9999\nOpStamp=0\nPhotoStamp=0",
                     )
                 if parsed.path.endswith("/getrequest"):
-                    return self._reply(200, "OK")
+                    sn = parse_qs(parsed.query).get("SN", [""])[0]
+                    server.polls.append(sn)
+                    return self._reply(server.poll_status, server.poll_body)
                 return self._reply(404, "nope")
 
             def do_POST(self):
                 parsed = urlparse(self.path)
                 if not parsed.path.endswith("/cdata"):
                     return self._reply(404, "nope")
+                if server.upload_location:
+                    self.send_response(302)
+                    self.send_header("Location", server.upload_location)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if server.upload_reply is not None:
+                    return self._reply(server.upload_status, server.upload_reply)
                 if server.mode == "http500":
                     return self._reply(500, "boom")
                 if server.mode == "error":

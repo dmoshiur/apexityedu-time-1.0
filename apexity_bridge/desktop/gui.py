@@ -294,7 +294,7 @@ class OverviewPage(QWidget):
         self.cards["uptime"].set_value(_fmt_uptime(d["service"]["uptime_seconds"]))
         self.cards["ems"].set_value("ONLINE" if online else "OFFLINE",
                                     "ok" if online else "err")
-        self.cards["ems"].set_hint(ems.get("protocol") or "not connected")
+        self.cards["ems"].set_hint(ems.get("last_error") or ems.get("protocol") or "not connected")
         self.cards["devices"].set_value(
             f"{d['devices'].get('online_now', 0)} / {d['devices'].get('registered', 0)}")
         self.cards["students"].set_value(str(d["students"]["total"]))

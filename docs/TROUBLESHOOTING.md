@@ -57,6 +57,37 @@ Check **Logs** for collect errors; run **Devices → Test**.
 4. TLS errors on Windows — update Windows root certificates; ensure the EMS
    serves a valid certificate (the bridge refuses cleartext HTTP).
 
+### Probe is OK, but the EMS shows Offline / no punch logs
+A probe uses a synthetic serial, so it only proves that an endpoint answers.
+The running sync worker now handshakes and polls each registered real serial
+approximately every 30 seconds, independently of new punches. Check:
+1. The bridge's serial exactly matches the EMS serial and tenant/site.
+2. **Overview**: read the EMS error text, not just ONLINE. A working handshake
+   and a failed presence poll can coexist; uploads are still attempted.
+3. **Attendance** and **Recent sync attempts**: an upload must return HTTP 200
+   and exactly `OK` or `OK: <accepted count>`. Unexpected replies now remain
+   failed/retryable, with an error in the application log and attendance row.
+4. `401/403`: verify the EMS's credential contract. A device API key shown in
+   the EMS UI is not necessarily the shared-token extension this bridge uses.
+   Do not rotate keys blindly or publish them in a screenshot.
+5. `getrequest` fails: ask the EMS team to check that route and its `last_seen`
+   update logic. Polling commands are only logged, not executed; **Sync users**
+   in the EMS does not cause the bridge to apply device administration commands.
+
+After installing an updated build, fully exit/restart the old bridge process
+(including its tray/background instance). Create one new test punch and allow
+at least one collection/health cycle, then check both the bridge and EMS.
+This source fix does not update an already installed Windows EXE automatically;
+rebuild with `powershell -ExecutionPolicy Bypass -File packaging\build.ps1`
+on Windows or install a build containing these changes.
+
+**Previously synced records:** this fix deliberately does not reset/replay old
+`synced` rows. Older builds may have falsely marked a batch synced after an
+unexpected HTTP 200 reply. Back up the local database and reconcile the affected
+serial/time range against the EMS before arranging a targeted replay; confirm
+EMS deduplication first. **Retry selected** only retries non-synced rows, not
+these historical rows. Do not delete the database or clear the K40 logs.
+
 ### Events stuck in `failed` / `review`
 - `failed` rows retry automatically with exponential backoff — give it time.
 - `review`/`rejected` rows need a human: **Attendance → Retry selected** after

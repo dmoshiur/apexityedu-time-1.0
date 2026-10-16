@@ -24,6 +24,7 @@ from ..ems.base import (
     EmsError,
     EmsProtocolError,
     EmsUnavailableError,
+    HealthResult,
 )
 from ..ems.factory import build_ems_client
 from ..students.directory import refresh_roster
@@ -45,6 +46,7 @@ class EmsStatus:
     last_error: str | None = None
     server_time: str | None = None
     probe: dict | None = None
+    device_presence: dict = field(default_factory=dict)
     roster_supported: bool = True
     roster_error: str | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -63,6 +65,7 @@ class EmsStatus:
                 "last_error": self.last_error,
                 "server_time": self.server_time,
                 "probe": self.probe,
+                "device_presence": {sn: dict(state) for sn, state in self.device_presence.items()},
                 "roster_supported": self.roster_supported,
                 "roster_error": self.roster_error,
             }
@@ -105,7 +108,9 @@ class SyncWorker:
     def rebuild_client(self) -> None:
         """Called when EMS settings change in the dashboard."""
         self._build_client()
+        self.status.update(online=False, device_presence={})
         self._next_health = 0.0
+        self.wake()
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._loop, name="sync-worker", daemon=True)
@@ -148,7 +153,14 @@ class SyncWorker:
         if self._client is None:
             return False
         try:
-            result = self._client.health_check()
+            devices = self.ctx.repos["devices"].list_active()
+            if self._client.protocol_name == "iclock" and devices:
+                result = self._iclock_device_health(devices)
+            else:
+                self.status.update(device_presence={})
+                result = self._client.health_check()
+                if result.ok:
+                    result = HealthResult(ok=True, server_time=result.server_time)
         except EmsAuthError as exc:
             self.status.update(online=False, last_error=str(exc))
             log.error("EMS auth problem: %s", exc)
@@ -161,12 +173,52 @@ class SyncWorker:
             self.status.update(online=False, last_error=str(exc)[:300])
             return False
         self.status.update(
-            online=result.ok, last_ok_at=iso_utc(), server_time=result.server_time,
-            last_error=None if result.ok else result.detail[:300],
+            online=result.ok, server_time=result.server_time,
+            last_error=result.detail[:300] or None,
+            **({"last_ok_at": iso_utc()} if result.ok else {}),
         )
         if result.ok:
             self.ctx.repos["settings"].set("ems_last_ok", iso_utc())
         return result.ok
+
+    def _iclock_device_health(self, devices: list[dict]) -> HealthResult:
+        """Refresh real serials every health interval, even with no new punches.
+
+        This advertises bridge-to-EMS presence, not proof that the physical
+        terminal is currently reachable on the LAN. A missing/failed presence
+        endpoint is reported, but does not prevent ATTLOG uploads to servers
+        that support ingestion without getrequest. One bad serial must not
+        stop checks or uploads for the other devices.
+        """
+        presence = {}
+        errors = []
+        for device in devices:
+            if self.ctx.stop_event.is_set():
+                break
+            serial = device["serial_number"]
+            state = {"handshake_ok": False, "poll_ok": False, "error": None}
+            try:
+                result = self._client.register_device(
+                    serial=serial, model=device.get("model"),
+                    firmware=device.get("firmware_version"), label=device.get("label"),
+                )
+                if not result.ok:
+                    raise EmsProtocolError(result.detail)
+                state["handshake_ok"] = True
+                self.ctx.repos["settings"].set(f"ems_registered:{serial}", "1")
+                self._client.poll_commands(serial)
+                state["poll_ok"] = True
+                state["last_ok_at"] = iso_utc()
+            except EmsError as exc:
+                state["error"] = str(exc)[:300]
+                errors.append(f"SN {serial}: {state['error']}")
+                log.warning("EMS device presence failed for SN %s: %s", serial, exc)
+            presence[serial] = state
+        self.status.update(device_presence=presence)
+        return HealthResult(
+            ok=any(state["handshake_ok"] for state in presence.values()),
+            protocol="iclock", detail="; ".join(errors),
+        )
 
     # ------------------------------------------------------------- task queue --
     def _process_queue(self) -> None:
@@ -183,10 +235,17 @@ class SyncWorker:
                     log.warning("unknown queue task %s", task["task_type"])
                 queue.complete(task["id"])
             except EmsProtocolError as exc:
-                # e.g. roster not supported by this EMS — do not keep hammering.
-                queue.complete(task["id"])
-                self.status.update(roster_supported=False, roster_error=str(exc)[:400])
-                log.error("task %s not supported by EMS: %s", task["task_type"], exc)
+                if task["task_type"] == "fetch_students":
+                    # iClock roster downloads are unsupported, not device failures.
+                    queue.complete(task["id"])
+                    self.status.update(roster_supported=False, roster_error=str(exc)[:400])
+                else:
+                    delay = backoff_seconds(int(task["attempts"]) + 1,
+                                            base=self.ctx.settings.sync_retry_base,
+                                            cap=self.ctx.config.sync_retry_max)
+                    queue.fail(task["id"], str(exc)[:400], seconds_from_now(delay))
+                    self.status.update(last_error=str(exc)[:300])
+                log.error("EMS task %s failed: %s", task["task_type"], exc)
             except EmsAuthError as exc:
                 queue.fail(task["id"], str(exc)[:400],
                            seconds_from_now(AUTH_PENALTY_DELAY))
@@ -265,8 +324,9 @@ class SyncWorker:
                 queue.record_attempt(attempt_type="push_attendance", event_count=len(ids),
                                      result="failed", error=str(exc)[:300],
                                      duration_ms=int((time.monotonic() - started) * 1000))
-                if isinstance(exc, EmsUnavailableError):
-                    self.status.update(online=False, last_error=str(exc)[:300])
+                self.status.update(last_error=str(exc)[:300],
+                                   **({"online": False} if isinstance(exc, EmsUnavailableError) else {}))
+                log.warning("EMS attendance upload failed for SN %s: %s", serial, exc)
                 continue
 
             # server accepted (possibly partially) -----------------------------

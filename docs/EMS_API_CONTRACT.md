@@ -28,7 +28,7 @@ the device's own serial number as its identity).
 | Upload | `POST {EMS_BASE}/iclock/cdata?SN=<serial>&table=ATTLOG&Stamp=<unix>` |
 | Body | `text/plain`, one TAB-separated line per punch: `PIN\tYYYY-MM-DD HH:MM:SS\tstatus\tverify\tworkcode\t0\t0` |
 | Success reply | `OK` or `OK: <count-of-accepted-lines>` (HTTP 200) |
-| Presence poll (optional) | `GET {EMS_BASE}/iclock/getrequest?SN=<serial>` → `OK` or `C:...` command |
+| Presence poll | `GET {EMS_BASE}/iclock/getrequest?SN=<serial>` → `OK` or `C:...` command; the bridge sends this every health interval (~30 s) for registered serials after a successful handshake |
 | Security | HTTPS **required**. The EMS must whitelist accepted serial numbers. Optional extension the bridge already sends when configured: `AuthToken=<shared secret>` query param **and** `X-Auth-Token` header (token stored in Windows Credential Manager). Reject requests with `401/403` when the token/SN is wrong. |
 | Server-side dedup | Mandatory: treat `SN + PIN + timestamp + status` as the natural unique key. The bridge may re-push a record after a crash; uploads must be idempotent. |
 
@@ -36,6 +36,36 @@ the device's own serial number as its identity).
 `4`=overtime-start, `5`=overtime-end — treat as informational; apply the
 school's rules server-side). The `PIN` is the biometric user ID **on the
 device**, not the EMS student id.
+
+### Acceptance and presence checks
+- Only **HTTP 200** with a complete `OK` or `OK: <count>` reply acknowledges
+  an attendance upload. Counts must be between zero and the submitted batch
+  size. `OK: 0` acknowledges no records; unaccepted records stay retryable.
+  Empty replies, HTML/login pages, JSON, handshake blocks, malformed counts,
+  and redirects are errors, never evidence of successful attendance storage.
+  Configure the final iClock URL: the client does not follow redirects.
+- With registered devices, the sync worker checks each **real serial** via
+  `cdata` and then `getrequest` every health interval, even when there are no
+  punches. Cached registration flags do not replace these checks. Without
+  registered devices, the synthetic health check tests endpoint availability
+  only. Probe/health success alone does not prove attendance ingestion.
+- The EMS should update its device `last_seen` on authenticated real-serial
+  communication. The bridge cannot force an EMS UI status change: that logic
+  and the tenant/SN mapping belong to the EMS backend. Presence here is
+  **bridge-to-EMS presence**, not proof the physical terminal is powered on;
+  the bridge's Devices page separately tracks LAN reachability.
+- If a server does not implement `getrequest`, the bridge exposes the poll
+  failure but still attempts attendance uploads after a valid handshake.
+  A failed serial does not stop presence checks for other registered devices.
+  Per-serial handshake/poll results are available in the overview API under
+  `ems.device_presence`; errors are also in the overview and application log.
+- Commands received through polling are **logged only**, never executed or
+  acknowledged as executed. User synchronization and device administration
+  are not added by presence polling.
+- The configured token is still the documented shared-token extension
+  (`AuthToken` and `X-Auth-Token`). An EMS with a different or per-device API
+  key contract needs explicit integration; a generic handshake does not
+  prove that such a key was accepted. Never paste credentials into logs/chat.
 
 ### What the EMS should do with the data
 1. Map `SN` → registered device (site/branch).

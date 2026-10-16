@@ -225,3 +225,105 @@ def test_device_registration_task(ctx, rest_server):
 
     worker._register_devices()                       # idempotent — no re-post
     assert len(rest_server.registered_devices) == 1
+
+
+@pytest.mark.parametrize("reply", ["<html>Login</html>", "", "OK: invalid", "OK: 9"])
+def test_invalid_iclock_ack_stays_failed_and_visible(ctx, iclock_server, reply, monkeypatch):
+    from unittest.mock import Mock
+    warning = Mock()
+    monkeypatch.setattr("apexity_bridge.sync.worker.log.warning", warning)
+    device = seed_device(ctx.repos)
+    ids = _make_events(ctx.repos, device, 2)
+    worker = _worker(ctx, iclock_server.url, "iclock")
+    iclock_server.upload_reply = reply
+    worker._tick()
+    assert ctx.repos["events"].counts()["synced"] == 0
+    rows = ctx.repos["events"].by_ids(ids)
+    assert all(row["sync_status"] == "failed" for row in rows)
+    assert all(row["next_retry_at"] for row in rows)
+    assert worker.status.last_error
+    assert "upload failed" in warning.call_args.args[0]
+    attempt = ctx.repos["queue"].recent_attempts(1)[0]
+    assert attempt["result"] == "failed"
+    assert attempt["error"]
+    iclock_server.upload_reply = None
+    ctx.repos["events"].retry_now(ids)
+    assert worker.push_due_events() == 2
+
+
+def test_real_serial_presence_repeats_without_attendance(ctx, iclock_server):
+    seed_device(ctx.repos, serial="PAS4260301185")
+    worker = _worker(ctx, iclock_server.url, "iclock")
+    for _ in range(2):
+        worker._next_health = 0
+        worker._tick()
+    assert iclock_server.handshakes == ["PAS4260301185"] * 2
+    assert iclock_server.polls == ["PAS4260301185"] * 2
+    state = worker.status.snapshot()["device_presence"]["PAS4260301185"]
+    assert state["handshake_ok"] and state["poll_ok"]
+    assert state["last_ok_at"]
+    assert worker.status.online
+    # No tight-loop flooding between health intervals.
+    worker._tick()
+    assert len(iclock_server.polls) == 2
+
+
+def test_presence_checks_are_per_device_and_failures_are_isolated(ctx, iclock_server):
+    seed_device(ctx.repos, serial="SN-BAD")
+    good = seed_device(ctx.repos, serial="SN-GOOD", ip="192.168.0.202")
+    seed_device(ctx.repos, serial="SN-DISABLED", status="disabled", ip="192.168.0.203")
+    _make_events(ctx.repos, good, 1)
+    iclock_server.rejected_serials.add("SN-BAD")
+    worker = _worker(ctx, iclock_server.url, "iclock")
+    worker._tick()
+    assert set(iclock_server.handshakes) == {"SN-BAD", "SN-GOOD"}
+    assert iclock_server.polls == ["SN-GOOD"]
+    assert ctx.repos["events"].counts()["synced"] == 1
+    state = worker.status.snapshot()["device_presence"]
+    assert not state["SN-BAD"]["handshake_ok"]
+    assert state["SN-GOOD"]["poll_ok"]
+    assert "SN-BAD" in worker.status.last_error
+
+
+def test_health_cannot_hide_real_serial_rejection(ctx, iclock_server):
+    seed_device(ctx.repos, serial="SN-BAD")
+    worker = _worker(ctx, iclock_server.url, "iclock")
+    iclock_server.rejected_serials.add("SN-BAD")
+    assert worker._client.health_check().ok  # synthetic SN still succeeds
+    assert not worker._health_check()
+    assert not worker.status.online
+    assert "SN-BAD" in worker.status.last_error
+    assert "403" in worker.status.last_error
+    assert worker.status.last_ok_at is None
+    iclock_server.rejected_serials.clear()
+    assert worker._health_check()
+    assert worker.status.last_error is None
+
+
+@pytest.mark.parametrize("status,body", [(404, "missing"), (200, "<html>Login</html>")])
+def test_poll_failure_is_visible_but_does_not_block_upload(ctx, iclock_server, status, body):
+    dev = seed_device(ctx.repos)
+    _make_events(ctx.repos, dev, 1)
+    iclock_server.poll_status, iclock_server.poll_body = status, body
+    worker = _worker(ctx, iclock_server.url, "iclock")
+    worker._tick()
+    assert worker.status.online
+    assert ctx.repos["events"].counts()["synced"] == 1
+    assert worker.status.last_error
+    assert not worker.status.snapshot()["device_presence"][dev["serial_number"]]["poll_ok"]
+
+
+def test_registration_protocol_error_does_not_disable_roster(ctx, iclock_server, monkeypatch):
+    from apexity_bridge.ems.base import EmsProtocolError
+    seed_device(ctx.repos)
+    worker = _worker(ctx, iclock_server.url, "iclock")
+
+    def bad_registration():
+        raise EmsProtocolError("bad handshake")
+
+    monkeypatch.setattr(worker, "_register_devices", bad_registration)
+    ctx.repos["queue"].enqueue_once("register_device", {})
+    worker._process_queue()
+    assert worker.status.roster_supported
+    assert ctx.repos["queue"].pending_count() == 1
+    assert "bad handshake" in worker.status.last_error

@@ -27,8 +27,9 @@ Security notes:
 from __future__ import annotations
 
 import logging
+import re
 import time
-from urllib.parse import quote, urljoin
+from urllib.parse import quote
 
 import requests
 
@@ -89,15 +90,24 @@ class IclockEmsClient:
         return f"{self.base_url}{self.path}/{suffix}?{query}"
 
     # ------------------------------------------------------------- transport --
+    def _safe_detail(self, text: str) -> str:
+        # URLs in requests exceptions (and server replies) can echo AuthToken.
+        if self._auth_token:
+            for secret in (quote(self._auth_token, safe=""), self._auth_token):
+                text = text.replace(secret, "[REDACTED]")
+        return text
+
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         try:
-            resp = self._http.request(method, url, timeout=self.timeout, **kwargs)
+            # A redirect to a login page must never become a successful upload.
+            resp = self._http.request(method, url, timeout=self.timeout,
+                                      allow_redirects=False, **kwargs)
         except requests.Timeout as exc:
-            raise EmsUnavailableError(f"EMS timeout: {exc}") from exc
+            raise EmsUnavailableError(f"EMS timeout: {self._safe_detail(str(exc))}") from exc
         except requests.ConnectionError as exc:
-            raise EmsUnavailableError(f"EMS unreachable: {exc}") from exc
+            raise EmsUnavailableError(f"EMS unreachable: {self._safe_detail(str(exc))}") from exc
         except requests.RequestException as exc:
-            raise EmsUnavailableError(f"EMS request failed: {exc}") from exc
+            raise EmsUnavailableError(f"EMS request failed: {self._safe_detail(str(exc))}") from exc
         if resp.status_code in (401, 403):
             raise EmsAuthError(
                 f"EMS rejected device credentials (HTTP {resp.status_code}) — "
@@ -108,23 +118,25 @@ class IclockEmsClient:
         return resp
 
     def _expect_ok_text(self, resp: requests.Response) -> str:
-        text = (resp.text or "").strip()
-        if resp.status_code >= 400:
-            raise EmsProtocolError(f"EMS HTTP {resp.status_code}: {text[:200]}")
+        # iClock replies are ASCII/UTF-8; text/plain without a charset would
+        # otherwise default to Latin-1 and corrupt an optional UTF-8 BOM.
+        resp.encoding = "utf-8"
+        text = (resp.text or "").lstrip("\ufeff").strip()
+        if resp.status_code != 200:
+            raise EmsProtocolError(
+                f"EMS HTTP {resp.status_code}: {self._safe_detail(text)[:200]}"
+            )
         return text
 
     # -------------------------------------------------------------- contract --
     def health_check(self) -> HealthResult:
         url = self._endpoint("cdata", "APEXITY-HEALTHCHECK", options="all",
                              pushver=PUSH_VER, language="69")
-        try:
-            resp = self._request("GET", url)
-        except (EmsUnavailableError, EmsAuthError):
-            raise
+        resp = self._request("GET", url)
         text = self._expect_ok_text(resp)
         ok = is_success_handshake(text)
         return HealthResult(ok=ok, protocol=self.protocol_name,
-                            detail=f"handshake response: {text[:120]!r}")
+                            detail=f"handshake response: {self._safe_detail(text)[:120]!r}")
 
     def handshake(self, serial: str) -> str:
         resp = self._request(
@@ -141,18 +153,13 @@ class IclockEmsClient:
         The serial must be pre-whitelisted in the EMS admin panel (documented).
         A successful handshake with the device SN proves the EMS accepts us.
         """
-        try:
-            text = self.handshake(serial)
-        except EmsAuthError as exc:
-            return RegisterResult(ok=False, detail=str(exc))
-        except EmsUnavailableError:
-            raise
+        text = self.handshake(serial)
         ok = is_success_handshake(text)
         return RegisterResult(
             ok=ok,
             remote_device_id=serial if ok else None,
             detail=("handshake OK — serial accepted by EMS"
-                    if ok else f"unexpected handshake reply: {text[:120]!r}"),
+                    if ok else f"unexpected handshake reply: {self._safe_detail(text)[:120]!r}"),
         )
 
     # ---------------------------------------------------------------- roster --
@@ -196,25 +203,31 @@ class IclockEmsClient:
         resp = self._request("POST", url, data=body.encode("utf-8"),
                              headers={"Content-Type": "text/plain"})
         text = self._expect_ok_text(resp)
-        upper = text.upper()
-
-        if upper.startswith("ERROR") or upper.startswith("ERR"):
-            raise EmsProtocolError(f"EMS refused ATTLOG: {text[:200]}")
-
-        accepted = [ev["id"] for ev in events]
-        partial_index = None
-        if "OK:" in upper:  # "OK: 42" → server counted 42 accepted records
-            try:
-                count = int(upper.split("OK:", 1)[1].strip().split()[0])
-            except (ValueError, IndexError):
-                count = None
-            if count is not None and 0 <= count < len(events):
-                partial_index = count
-                accepted = [ev["id"] for ev in events[:count]]
-                log.warning(
-                    "EMS accepted only %d/%d records for SN %s",
-                    count, len(events), serial,
-                )
+        # An HTTP 200 alone is not acceptance: login HTML, JSON, empty
+        # replies, handshake blocks and malformed counts must stay retryable.
+        match = re.fullmatch(r"OK(?:\s*:\s*([0-9]+))?", text, re.IGNORECASE)
+        if match is None:
+            raise EmsProtocolError(
+                f"EMS refused ATTLOG for SN {serial}: expected OK or OK: <count>; "
+                f"HTTP {resp.status_code}, reply={self._safe_detail(text)[:200]!r}"
+            )
+        digits = match.group(1)
+        if digits is None:
+            count = len(events)
+        else:
+            digits = digits.lstrip("0") or "0"
+            if len(digits) > len(str(len(events))):
+                raise EmsProtocolError(f"EMS ATTLOG count exceeds batch for SN {serial}")
+            count = int(digits)
+        if count > len(events):
+            raise EmsProtocolError(
+                f"EMS ATTLOG count {count} exceeds batch of {len(events)} for SN {serial}"
+            )
+        accepted = [ev["id"] for ev in events[:count]]
+        partial_index = count if count < len(events) else None
+        if partial_index is not None:
+            log.warning("EMS accepted only %d/%d records for SN %s",
+                        count, len(events), serial)
         return UploadOutcome(
             accepted_ids=tuple(accepted),
             partial_index=partial_index,
@@ -229,9 +242,15 @@ class IclockEmsClient:
         """
         resp = self._request("GET", self._endpoint("getrequest", serial))
         text = self._expect_ok_text(resp)
-        if not text or text.upper() == "OK":
+        if text.upper() == "OK":
             return []
         commands = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if not commands or any(not cmd.startswith("C:") for cmd in commands):
+            raise EmsProtocolError(
+                f"EMS presence poll for SN {serial}: expected OK or C: command; "
+                f"reply={self._safe_detail(text)[:200]!r}"
+            )
         for cmd in commands:
-            log.warning("EMS sent iClock command (not executed, logged only): %s", cmd[:200])
+            log.warning("EMS sent iClock command (not executed, logged only): %s",
+                        self._safe_detail(cmd)[:200])
         return commands
