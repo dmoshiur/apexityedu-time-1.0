@@ -106,3 +106,40 @@ throttling; secrets in the OS credential store; HTTPS-only remote transport;
 no fingerprint templates, ever; audit log of every admin action; redacted
 diagnostic exports. Attendance is personal data — the bridge keeps collection
 and retention to the minimum the school needs.
+
+## In-app Windows updates (1.0.1+)
+
+Install an update-enabled build once on existing PCs. Afterwards the desktop app
+checks the public GitHub Release channel ten seconds after launch and every six
+hours. **Check for updates** also checks immediately. When a newer stable version
+is available, **Download and install update** downloads it in the background,
+checks its size and SHA-256, asks for Windows administrator permission, then exits
+the bridge and runs the installer. The installer reopens the app after updating.
+If permission is declined, the current bridge stays open. Internet/verification
+errors leave the current installation untouched and allow retrying. Database,
+credentials and settings are kept; updating does not uninstall the application.
+The installer may display progress and Windows may show UAC/SmartScreen prompts.
+Update downloads are staged in the Windows user's temporary directory.
+
+### Publishing a new version
+
+1. Make changes and set `__version__` in `apexity_bridge/__init__.py` to a higher
+   stable `X.Y.Z` (for example `1.0.2`). Never reuse a published version.
+2. Run `python -m scripts.release_metadata` to synchronize the package, installer
+   and Windows executable version fields. Commit these changes.
+3. After review/merge, a maintainer publishes a matching tag, e.g. `v1.0.2`.
+   The Windows workflow checks the tag/version match, builds the installer and
+   `update.json`, then publishes both as a GitHub Release. Ordinary code pushes
+   only produce CI artifacts: they do **not** update installed users.
+4. Users receive the update on the next check. The repository and release assets
+   must be publicly downloadable; no GitHub credentials are stored in the app.
+
+For a local Windows build, `packaging/build.ps1` also synchronizes versions and
+writes `dist/update.json` next to the installer. Both files must be published on
+the matching release. The update channel is fixed to this repository; do not edit
+URLs in the manifest to point elsewhere. HTTPS and SHA-256 protect transport and
+integrity, but are not a replacement for Windows code signing. Protect release
+permissions and use a signing certificate for production distribution.
+
+Windows installer/UAC/restart behaviour must be smoke-tested on a Windows PC;
+source checkouts can check releases but intentionally cannot install updates.
