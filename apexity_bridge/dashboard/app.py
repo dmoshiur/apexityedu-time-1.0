@@ -692,6 +692,7 @@ def create_app(ctx) -> Flask:
             if ctx.secret_store is not None:
                 try:
                     token_configured = bool(ctx.secret_store.has_ems_token())
+                    token_error = getattr(ctx.secret_store, "last_error", None)
                 except Exception as exc:      # credential store unavailable
                     token_error = str(exc)[:300]
                     log.warning("credential store check failed: %s", exc)

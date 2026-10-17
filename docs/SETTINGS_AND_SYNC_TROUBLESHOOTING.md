@@ -241,7 +241,7 @@ you know which one:
   Production must show `OS credential store (…)` in `doctor`.
 * Locked vault / EDR blocking Credential Manager → unlock the session, allow
   the app, or run `doctor` interactively; read failures no longer take down the
-  Settings page (v1.3.0).
+  Settings page (v1.3.0); v1.3.1 reports the exact read error via `token_error` / `doctor`.
 
 ---
 
