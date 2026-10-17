@@ -497,3 +497,16 @@ def test_sync_now_endpoint_runs_one_pass(client, ctx, rest_server):
     assert resp.status_code == 200
     result = resp.get_json()["result"]
     assert "roster" in result and "users" in result and "attendance" in result
+
+
+def test_overview_reports_missing_ems_token(client, ctx):
+    """The UI must be able to ask for the token when none is saved yet."""
+    token = _login(client)
+    d = client.get("/api/overview").get_json()
+    assert d["ems_token_configured"] is False
+    ctx.secret_store.set_ems_token("ui-saved-token")
+    d = client.get("/api/overview").get_json()
+    assert d["ems_token_configured"] is True
+    page = client.get("/").data.decode()
+    assert 'id="token-notice"' in page
+    assert 'href="/settings"' in page

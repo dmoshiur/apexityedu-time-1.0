@@ -204,6 +204,7 @@ bundle. On Windows it lives in **Credential Manager** under the service
 
 ```powershell
 python -m apexity_bridge set-token        # hidden prompt
+echo <token> | python -m apexity_bridge set-token --stdin   # non-interactive
 python -m apexity_bridge delete-token
 ```
 

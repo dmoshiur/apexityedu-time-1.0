@@ -66,6 +66,8 @@ async function loadOverview() {
     const d = await api("/api/overview");
     const denied = !d.ems.online && (d.ems.denied_serials || []).length > 0;
     setEmsPill(d.ems.online, d.ems.online ? "EMS online" : denied ? "Serial DENIED" : "EMS offline");
+    const tokenNotice = document.getElementById("token-notice");
+    if (tokenNotice) tokenNotice.classList.toggle("hidden", d.ems_token_configured !== false);
     const up = d.service.uptime_seconds;
     document.getElementById("st-uptime").textContent =
       up > 3600 ? `${(up / 3600).toFixed(1)}h` : `${Math.max(1, Math.round(up / 60))}m`;

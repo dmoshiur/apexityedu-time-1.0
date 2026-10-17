@@ -108,8 +108,10 @@ Other checks that matter:
 2. If `iClock endpoint: no` and `REST bridge API: no` — the EMS has no
    attendance ingestion yet. The fix is server-side; see
    `docs/EMS_API_CONTRACT.md`. Collection continues regardless.
-3. If reachable but 401/403 — the token is wrong/expired:
-   `python -m apexity_bridge set-token`
+3. If reachable but 401/403 — the token is wrong/expired (or was never saved):
+   open **Settings → EMS device token → Save** in the dashboard (the Overview
+   page shows a banner when no token is saved). Terminal alternative:
+   `python -m apexity_bridge set-token` (or pipe it: `echo <token> | python -m apexity_bridge set-token --stdin`)
 4. TLS errors on Windows — update Windows root certificates; ensure the EMS
    serves a valid certificate (the bridge refuses cleartext HTTP).
 

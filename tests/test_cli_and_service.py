@@ -107,3 +107,53 @@ def test_service_command_on_non_windows(capsys):
     rc = service_action("status", load_config(environ={}))
     assert rc == 1
     assert "Task Scheduler" in capsys.readouterr().out
+
+
+def _memory_secret_store(monkeypatch):
+    """Route SecretStore to one shared in-memory backend (no OS keyring in tests)."""
+    from apexity_bridge.security import secrets as secrets_mod
+    backend = secrets_mod._MemoryBackend()
+    monkeypatch.setattr(secrets_mod.SecretStore, "_select_backend",
+                        lambda self: backend)
+    return backend
+
+
+def test_cli_set_token_from_stdin(tmp_path, monkeypatch, capsys):
+    import io
+
+    monkeypatch.setenv("BRIDGE_DATA_DIR", str(tmp_path))
+    backend = _memory_secret_store(monkeypatch)
+    monkeypatch.setattr("sys.stdin", io.StringIO("device-token-from-pipe\n"))
+    rc = main(["set-token", "--stdin"])
+    assert rc == 0
+    assert backend.get("apexityedu-bridge/ems-device-token") == "device-token-from-pipe"
+    out = capsys.readouterr().out
+    assert "token stored" in out
+    assert "device-token-from-pipe" not in out
+
+
+def test_cli_set_token_closed_stdin_is_friendly_error(tmp_path, monkeypatch, capsys):
+    """Piped/closed stdin with no token must not crash with a traceback."""
+    import io
+
+    monkeypatch.setenv("BRIDGE_DATA_DIR", str(tmp_path))
+    backend = _memory_secret_store(monkeypatch)
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    rc = main(["set-token"])
+    assert rc == 1
+    assert backend.get("apexityedu-bridge/ems-device-token") is None
+    assert "nothing stored" in capsys.readouterr().out
+
+
+def test_cli_set_token_interactive_prompt(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("BRIDGE_DATA_DIR", str(tmp_path))
+    backend = _memory_secret_store(monkeypatch)
+
+    class FakeTTY:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr("sys.stdin", FakeTTY())
+    monkeypatch.setattr("getpass.getpass", lambda *a, **k: "  typed-token  ")
+    assert main(["set-token"]) == 0
+    assert backend.get("apexityedu-bridge/ems-device-token") == "typed-token"
