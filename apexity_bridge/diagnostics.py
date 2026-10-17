@@ -263,6 +263,13 @@ def _secret_checks(ctx, checks: list[dict], report: dict) -> None:
         if token:
             _add(checks, "secrets.token", "ok", "EMS device token is stored",
                  f"in {info['backend']} (value never printed)")
+        elif getattr(store, "last_error", None):
+            info["error"] = str(store.last_error)[:300]
+            _add(checks, "secrets.token", "warn", "The EMS token could not be read",
+                 info["error"],
+                 "Unlock Windows Credential Manager for the account that runs the "
+                 "bridge, then run the self-check again. A read failure is not the "
+                 "same as 'no token saved'.")
         else:
             _add(checks, "secrets.token", "warn", "No EMS device token is stored",
                  "the EMS may reject REST calls with 401/403",

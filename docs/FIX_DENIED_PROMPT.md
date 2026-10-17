@@ -1,6 +1,6 @@
 # "EMS OFFLINE" / `DENIED` — fix guide and copy-paste prompt
 
-**Symptom:** the bridge shows **EMS OFFLINE** (from v1.3.1: **SERIAL DENIED**),
+**Symptom:** the bridge shows **EMS OFFLINE** (from v1.3.2: **SERIAL DENIED**),
 and `https://apexityedu.com/iclock...` answers `DENIED` in a browser.
 
 **What it means:** the server is up and the internet works. The ApexityEdu
