@@ -87,3 +87,16 @@ def test_config_allows_localhost_fixture(tmp_path):
     cfg = Config(ems_base_url="http://127.0.0.1:8080",
                  ems_allow_insecure_localhost=True, db_path=tmp_path / "b.db")
     assert cfg.validate() == []
+
+
+def test_secret_store_read_failure_is_reported_not_raised(tmp_path):
+    class _BrokenBackend:
+        def get(self, _service):
+            raise RuntimeError("Credential Manager is locked")
+
+    store = SecretStore(tmp_path)
+    store._backend = _BrokenBackend()
+
+    assert store.get_ems_token() is None          # Settings page stays alive
+    assert store.has_ems_token() is False
+    assert "locked" in (store.last_error or "")   # but the reason is visible

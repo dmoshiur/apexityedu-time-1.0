@@ -23,6 +23,7 @@ _USERNAME = "apexity-bridge"
 class SecretStore:
     def __init__(self, data_dir: Path):
         self.data_dir = Path(data_dir)
+        self._last_error: str | None = None
         self._backend = self._select_backend()
 
     # ---------------------------------------------------------------- backend --
@@ -53,6 +54,16 @@ class SecretStore:
     def backend_name(self) -> str:
         return type(self._backend).__name__.lstrip("_")
 
+    @property
+    def last_error(self) -> str | None:
+        """Why the last read failed (None when it succeeded).
+
+        The Settings page distinguishes "no token yet" from "the credential
+        store could not be opened"; silently treating the latter as the
+        former sends operators chasing the wrong problem.
+        """
+        return getattr(self, "_last_error", None)
+
     def set_ems_token(self, token: str) -> None:
         # A failed *write* must raise: claiming "saved" while the Credential
         # Manager refused the secret would be a lie. Reads are different — a
@@ -61,10 +72,13 @@ class SecretStore:
 
     def get_ems_token(self) -> str | None:
         try:
-            return self._backend.get(SERVICE_EMS_TOKEN)
+            token = self._backend.get(SERVICE_EMS_TOKEN)
         except Exception as exc:          # keyring backend error / locked vault
+            self._last_error = str(exc)[:300]
             log.error("could not read the EMS token from the credential store: %s", exc)
             return None
+        self._last_error = None
+        return token
 
     def delete_ems_token(self) -> None:
         self._backend.delete(SERVICE_EMS_TOKEN)
