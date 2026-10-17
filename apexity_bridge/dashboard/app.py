@@ -19,7 +19,7 @@ from flask import (
     send_file, session, url_for,
 )
 
-from ..config import DB_MANAGED_KEYS
+from ..config import DB_MANAGED_KEYS, normalise_db_setting
 from ..students.mapping import MappingError, MappingService
 from ..timeutils import iso_utc
 from . import auth
@@ -35,8 +35,17 @@ def create_app(ctx) -> Flask:
         PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
         MAX_CONTENT_LENGTH=2 * 1024 * 1024,
         JSON_SORT_KEYS=False,
+        # Local single-user UI: revalidate app.js/app.css on every load so an
+        # upgraded bridge can never keep serving a broken cached asset.
+        SEND_FILE_MAX_AGE_DEFAULT=0,
     )
     app.config["CTX"] = ctx
+
+    @app.after_request
+    def _revalidate_static_assets(resp):
+        if request.path.startswith("/static/"):
+            resp.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+        return resp
     repos = ctx.repos
     auth.ensure_secret_key(app, repos["settings"])
     auth.csrf_protect(app)
@@ -679,25 +688,37 @@ def create_app(ctx) -> Flask:
     def api_settings():
         if request.method == "GET":
             editable = {k: repos["settings"].get(k) for k in DB_MANAGED_KEYS}
+            token_configured, token_error = False, None
+            if ctx.secret_store is not None:
+                try:
+                    token_configured = bool(ctx.secret_store.has_ems_token())
+                except Exception as exc:      # credential store unavailable
+                    token_error = str(exc)[:300]
+                    log.warning("credential store check failed: %s", exc)
             return ok(settings=editable,
                       effective={k: str(getattr(ctx.settings, attr))
                                  for k, (attr, _c) in DB_MANAGED_KEYS.items()},
                       env_base_url=ctx.config.ems_base_url,
-                      token_configured=ctx.secret_store.has_ems_token() if ctx.secret_store else False,
+                      token_configured=token_configured,
+                      token_error=token_error,
+                      ems_commands=ctx.ems_status.snapshot(),
                       dashboard_host=ctx.config.dashboard_host,
                       dashboard_port=ctx.config.dashboard_port)
         payload = request.get_json(silent=True) or request.form
         changed = []
         for key in DB_MANAGED_KEYS:
-            if key in payload:
-                value = str(payload.get(key) or "").strip()[:300]
-                if key == "ems_protocol" and value not in ("auto", "iclock", "rest"):
-                    return fail("ems_protocol must be auto, iclock or rest")
-                old = repos["settings"].get(key)
-                if value in ("", "None"):
+            if key not in payload:
+                continue
+            value, error = normalise_db_setting(key, payload.get(key))
+            if error:
+                return fail(error)
+            old = repos["settings"].get(key)
+            if value == "":
+                if old is not None:
                     repos["settings"].delete(key)
-                elif value != old:
-                    repos["settings"].set(key, value)
+                    changed.append(key)
+            elif value != old:
+                repos["settings"].set(key, value)
                 changed.append(key)
         if changed:
             repos["audit"].log(actor=auth.current_actor(), action="settings.update",
@@ -777,6 +798,23 @@ def create_app(ctx) -> Flask:
         repos["audit"].log(actor=auth.current_actor(), action="backup.created",
                            detail=str(target))
         return ok(backup=str(target))
+
+    @app.route("/api/diagnostics/doctor", methods=["GET", "POST"])
+    @auth.login_required
+    def api_diagnostics_doctor():
+        """Read-only self-check: DB, token, EMS reachability and command state."""
+        from ..diagnostics import build_doctor_report, format_doctor_report
+
+        payload = request.get_json(silent=True) or {}
+        network = str(payload.get("network", "1")).lower() not in ("0", "false", "no")
+        report = build_doctor_report(ctx, network=network)
+        report["text"] = format_doctor_report(report)
+        repos["audit"].log(
+            actor=auth.current_actor(), action="diagnostics.doctor",
+            detail=f"ok={report['ok']} failures={len(report['failures'])} "
+                   f"warnings={len(report['warnings'])}",
+        )
+        return ok(report=report, text=report["text"])
 
     @app.route("/api/diagnostics/export", methods=["POST"])
     @auth.login_required
@@ -875,6 +913,12 @@ def build_diagnostic_zip(ctx) -> Path:
             "exported_at": iso_utc(),
         }
         zf.writestr("overview.json", json.dumps(overview, indent=2, default=str))
+        try:
+            from ..diagnostics import build_doctor_report
+            doctor = build_doctor_report(ctx, network=False)
+            zf.writestr("doctor.json", json.dumps(doctor, indent=2, default=str))
+        except Exception as exc:            # diagnostics must never break export
+            log.warning("doctor report could not be added to the bundle: %s", exc)
     snapshot_db.unlink(missing_ok=True)
     for suffix in ("-wal", "-shm"):  # pragma: no cover - platform dependent
         Path(str(snapshot_db) + suffix).unlink(missing_ok=True)

@@ -238,6 +238,86 @@ def test_settings_roundtrip_and_validation(client, ctx):
     assert "scan_interval" in audits[0]["detail"]
 
 
+def test_settings_page_renders_every_managed_input(client):
+    _login(client)
+    html = client.get("/settings").data.decode()
+    for name in ("scan_interval", "sync_interval", "collect_interval",
+                 "roster_interval", "users_sync_interval", "ems_push_users",
+                 "ems_execute_commands", "ems_protocol", "ems_base_url"):
+        assert f'name="{name}"' in html, name
+    assert "btn-doctor" in html
+
+
+def test_settings_accepts_environment_value_and_booleans(client, ctx):
+    token = _login(client)
+    headers = {"X-CSRF-Token": token}
+
+    # "(from environment)" is the empty option; it must clear the override,
+    # not fail validation. This was the Settings-page save bug.
+    resp = client.post("/api/settings", json={
+        "ems_protocol": "", "ems_push_users": "0",
+        "users_sync_interval": "120", "scan_interval": "90",
+    }, headers=headers)
+    assert resp.status_code == 200, resp.get_json()
+    assert set(resp.get_json()["changed"]) == {
+        "ems_push_users", "users_sync_interval", "scan_interval"}
+
+    d = client.get("/api/settings").get_json()
+    assert d["settings"]["ems_protocol"] is None
+    assert d["settings"]["ems_push_users"] == "0"
+    assert d["settings"]["users_sync_interval"] == "120"
+
+
+def test_settings_rejects_out_of_range_intervals(client):
+    token = _login(client)
+    resp = client.post("/api/settings", json={"collect_interval": "1"},
+                       headers={"X-CSRF-Token": token})
+    assert resp.status_code == 400
+    assert "at least 5" in resp.get_json()["error"]
+
+
+def test_settings_rejects_plaintext_remote_ems_url(client):
+    token = _login(client)
+    resp = client.post("/api/settings",
+                       json={"ems_base_url": "http://collector.example.com"},
+                       headers={"X-CSRF-Token": token})
+    assert resp.status_code == 400
+    assert "localhost" in resp.get_json()["error"]
+
+
+def test_settings_survives_a_broken_credential_store(client, ctx):
+    _login(client)
+    class BrokenStore:
+        def has_ems_token(self):
+            raise RuntimeError("credential vault locked")
+    ctx.secret_store = BrokenStore()
+
+    resp = client.get("/api/settings")
+    assert resp.status_code == 200
+    d = resp.get_json()
+    assert d["token_configured"] is False
+    assert "vault locked" in (d["token_error"] or "")
+
+
+def test_static_assets_are_revalidated_after_an_upgrade(client):
+    resp = client.get("/static/app.js")
+    assert resp.status_code == 200
+    assert "no-cache" in resp.headers.get("Cache-Control", "")
+
+
+def test_doctor_endpoint_returns_actionable_report(client, ctx):
+    token = _login(client)
+    resp = client.post("/api/diagnostics/doctor", json={"network": 0},
+                       headers={"X-CSRF-Token": token})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    report = body["report"]
+    assert report["network_checked"] is False
+    assert any(c["id"] == "database.integrity" for c in report["checks"])
+    assert "ApexityEdu Bridge self-check" in body["text"]
+    assert "Celery" in report["server_note"]
+
+
 def test_logs_api(client, ctx):
     ctx.repos["audit"].log(actor="tester", action="something.happened", detail="hello")
     token = _login(client)

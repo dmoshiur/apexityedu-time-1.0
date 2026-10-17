@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from dataclasses import dataclass
 from urllib.parse import quote
 
 import requests
@@ -75,8 +76,61 @@ REFUSED_COMMANDS = (
 )
 
 
+@dataclass(frozen=True)
+class IclockCommand:
+    """One parsed ``C:<id>:<COMMAND>`` instruction from ``getrequest``."""
+
+    raw: str
+    command_id: str | None
+    body: str          # command text without the C:<id>: envelope
+    verb: str          # upper-cased, recognised verb where possible
+
+    @property
+    def signature(self) -> str:
+        """Stable grouping key for repeated server commands.
+
+        ``SET TIME 2026-10-17 09:00:00`` and the same command one heartbeat
+        later must collapse to one audit entry — otherwise the log becomes a
+        wall of identical warnings.  ``DATA QUERY`` keeps its subject
+        (USERINFO/ATTLOG/BIODATA) so different queries are not merged.
+        """
+        parts = self.verb.split()
+        if parts[:2] == ["DATA", "QUERY"]:
+            return " ".join(parts[:3])
+        return " ".join(parts[:2]) or self.verb
+
+
+def parse_command(command: str) -> IclockCommand:
+    """Parse one raw command, tolerating both iClock envelope shapes.
+
+    Real servers send ``C:12:DATA QUERY USERINFO``; some omit the numeric id
+    (``C:CHECK``) or already unwrap the body (``CHECK``).  All three are
+    accepted so a syntactic variant is answered instead of being mistaken for
+    a destructive command.
+    """
+    raw = (command or "").strip()
+    body = raw
+    command_id: str | None = None
+    if raw.upper().startswith("C:"):
+        rest = raw[2:].strip()
+        if ":" in rest:
+            candidate, remainder = rest.split(":", 1)
+            command_id = candidate.strip() or None
+            body = remainder.strip()
+        else:
+            body = rest
+    upper = body.upper()
+    verb = upper
+    for known in ("DATA QUERY USERINFO", "DATA QUERY ATTLOG", "DATA QUERY OPERLOG",
+                  "DATA QUERY BIODATA", "DATA QUERY FINGERTMP"):
+        if upper.startswith(known):
+            verb = known
+            break
+    return IclockCommand(raw=raw, command_id=command_id, body=body, verb=verb)
+
+
 def parse_commands(text: str) -> list[str]:
-    """Extract ``C:<id>:<COMMAND>`` items from a getrequest reply.
+    """Extract the command bodies from a getrequest reply.
 
     Servers that answer a plain ``OK`` yield an empty list.
     """
@@ -85,27 +139,13 @@ def parse_commands(text: str) -> list[str]:
         line = line.strip()
         if not line or line.upper() == "OK":
             continue
-        if line.upper().startswith("C:"):
-            line = line[2:]
-            line = line.split(":", 1)[1] if ":" in line else line
-        commands.append(line.strip())
+        commands.append(parse_command(line).body)
     return commands
 
 
 def command_verb(command: str) -> str:
-    """Upper-cased verb of an iClock command, e.g. 'DATA QUERY USERINFO'.
-
-    Accepts both the raw ``C:<id>:<COMMAND>`` form a server sends through
-    getrequest and an already-unwrapped command.
-    """
-    text = (command or "").strip().upper()
-    if text.startswith("C:") and ":" in text[2:]:
-        text = text[2:].split(":", 1)[1].strip()
-    for verb in ("DATA QUERY USERINFO", "DATA QUERY ATTLOG", "DATA QUERY OPERLOG",
-                 "DATA QUERY BIODATA", "DATA QUERY FINGERTMP"):
-        if text.startswith(verb):
-            return verb
-    return text
+    """Upper-cased verb of an iClock command, e.g. 'DATA QUERY USERINFO'."""
+    return parse_command(command).verb
 
 
 def command_is_read_only(command: str) -> bool:
@@ -279,12 +319,16 @@ class IclockEmsClient:
     # --------------------------------------------------------------- upload --
     @staticmethod
     def format_attlog_line(event: dict) -> str:
-        ts = event["event_timestamp"].replace("T", " ")[:19]
+        # The wire format is TAB-separated; a tab/newline in a PIN or timestamp
+        # would split one record into two and make the server's parser (and its
+        # Celery ingestion task) fail. Keep the line structurally valid.
+        pin = str(event.get("device_user_id") or "").strip()
+        pin = pin.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+        ts = str(event.get("event_timestamp") or "").replace("T", " ")[:19]
+        ts = ts.replace("\t", " ").replace("\r", " ").replace("\n", " ")
         status = event.get("status") or 0
         verify = event.get("verify_mode") or event.get("punch") or 0
-        return "\t".join(
-            [str(event["device_user_id"]), ts, str(status), str(verify), "0", "0", "0"]
-        )
+        return "\t".join([pin, ts, str(status), str(verify), "0", "0", "0"])
 
     def push_attendance(self, events: list[dict], *, serial: str | None = None) -> UploadOutcome:
         if not events:
@@ -345,16 +389,20 @@ class IclockEmsClient:
         The device password is deliberately never sent: the bridge only needs
         the EMS to learn which PIN belongs to which human.
         """
-        name = (user.get("name") or f"User {user.get('user_id')}").strip()
-        name = name.replace("\t", " ").replace("\n", " ")[:60]
+        pin = str(user.get("user_id") or "").strip()
+        pin = pin.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+        if not pin:
+            return ""
+        name = (user.get("name") or f"User {pin}").strip()
+        name = name.replace("\t", " ").replace("\r", " ").replace("\n", " ")[:60]
         privilege = user.get("privilege")
         try:
             privilege = int(privilege) if privilege is not None else 0
         except (TypeError, ValueError):
             privilege = 0
-        card = str(user.get("card") or "")
+        card = str(user.get("card") or "").replace("\t", " ").replace("\n", " ")
         return (
-            f"USER PIN={user.get('user_id')}\tName={name}\tPri={privilege}\t"
+            f"USER PIN={pin}\tName={name}\tPri={privilege}\t"
             f"Passwd=\tCard={card}\tGrp=1\tTZ=0000000000000000"
         )
 
@@ -368,7 +416,11 @@ class IclockEmsClient:
         """
         if not users:
             return UserSyncOutcome(accepted=0, detail="no users to push")
-        body = "\n".join(self.format_user_line(u) for u in users) + "\n"
+        lines = [line for line in (self.format_user_line(u) for u in users) if line]
+        if not lines:
+            return UserSyncOutcome(
+                fatal="the device user table has no usable PIN; nothing was uploaded")
+        body = "\n".join(lines) + "\n"
         url = self._endpoint("cdata", serial, table=TABLE_USER, Stamp=int(time.time()))
         resp = self._request("POST", url, data=body.encode("utf-8"),
                              headers={"Content-Type": "text/plain"})
@@ -382,8 +434,8 @@ class IclockEmsClient:
                 )
             )
         match = re.search(r"([0-9]+)", text)
-        accepted = int(match.group(1)) if match else len(users)
-        return UserSyncOutcome(accepted=min(accepted, len(users)),
+        accepted = int(match.group(1)) if match else len(lines)
+        return UserSyncOutcome(accepted=min(accepted, len(lines)),
                                detail=f"USER table accepted: {self._safe_detail(text)[:80]!r}")
 
     # ------------------------------------------------------------ people table --
@@ -439,22 +491,54 @@ class IclockEmsClient:
 
     # --------------------------------------------------------------- polling --
     def poll_commands(self, serial: str) -> list[str]:
-        """GET getrequest — informational; unknown commands are logged only.
+        """GET getrequest — return queued ``C:<id>:<COMMAND>`` lines.
 
-        The bridge deliberately does NOT execute device administration
-        commands received this way without an explicit admin opt-in.
+        The bridge logs the raw commands at debug level here; the sync worker
+        decides whether each one is safe to answer, and audits a refusal only
+        once per command type (servers re-queue unacknowledged commands, so a
+        warning here would repeat every 30 seconds forever).
         """
         resp = self._request("GET", self._endpoint("getrequest", serial))
         text = self._expect_ok_text(resp)
         if text.upper() == "OK":
             return []
+        if text.upper() == "DENIED":
+            raise EmsProtocolError(
+                f"EMS denied presence for SN {serial} — register/authorize this "
+                "serial in ApexityEdu → Biometric Devices, or correct the device's "
+                "EMS serial in the bridge"
+            )
         commands = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        if not commands or any(not cmd.startswith("C:") for cmd in commands):
+        if not commands or any(not cmd.upper().startswith("C:") for cmd in commands):
             raise EmsProtocolError(
                 f"EMS presence poll for SN {serial}: expected OK or C: command; "
                 f"reply={self._safe_detail(text)[:200]!r}"
             )
         for cmd in commands:
-            log.warning("EMS sent iClock command (not executed, logged only): %s",
-                        self._safe_detail(cmd)[:200])
+            log.debug("EMS sent iClock command: %s", self._safe_detail(cmd)[:200])
         return commands
+
+    def acknowledge_command(self, serial: str, *, command_id: str,
+                            command: str, return_code: int = 0) -> None:
+        """POST /iclock/devicecmd — the ADMS command result ack.
+
+        A real terminal reports ``ID=<id>&Return=<code>&CMD=<command>`` after
+        executing a command.  Without this ack an ADMS server keeps the
+        command queued and re-sends it on every ``getrequest`` poll, which is
+        exactly how a single unsupported command turns into a log line every
+        30 seconds (and, on some backends, a permanently retrying queue task).
+        ``return_code=0`` means success; ``-1`` means "not supported/not
+        executed".  The bridge never acknowledges a destructive command as
+        successful.
+        """
+        command_id = str(command_id or "").strip()
+        if not command_id:
+            raise EmsProtocolError(
+                f"EMS command for SN {serial} has no C:<id> envelope, cannot ack"
+            )
+        body = f"ID={command_id}&Return={int(return_code)}&CMD={command}".encode("utf-8")
+        resp = self._request(
+            "POST", self._endpoint("devicecmd", serial),
+            data=body, headers={"Content-Type": "text/plain"},
+        )
+        self._expect_ok_text(resp)

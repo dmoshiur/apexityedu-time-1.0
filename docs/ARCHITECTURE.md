@@ -24,7 +24,7 @@
 | `discovery/` | Enumerate PC subnets (`psutil`), rate-limited TCP probing (4370 default + extras), optional ICMP aid, ARP table hints, protocol-level identification, periodic re-scan with verified IP repair, "Scan LAN Now". |
 | `devices/` | `DeviceAdapter` interface + `ZkDeviceAdapter` (pyzk) + `FakeDeviceAdapter` (tests/dev). Read-only contract; also mirrors the terminal's **user table** (PIN + name). |
 | `attendance/` | Per-device collectors (round-robin, per-device exponential backoff, identity re-verified on **every** connect) + the user-table mirror, and the event pipeline (dedup + validation + mapping resolution). |
-| `sync/` | Offline-first worker: EMS health checks, durable task queue, batched pushes with jittered backoff, **device-user publication**, people-directory refresh, read-only ADMS command answering. |
+| `sync/` | Offline-first worker: EMS health checks, durable task queue, batched pushes with jittered backoff, **device-user publication**, people-directory refresh, read-only ADMS command answering with `devicecmd` acknowledgement and once-only refusal audits. |
 | `ems/` | `IclockEmsClient`, `RestEmsClient`, live `probe`, ingestion `verify`, factory (supports split mode: iClock pushes + REST roster), and `push.py` — the **manual push service** (device user tables, people directory, single person) that reports exactly what the server answered. |
 | `students/` | People-directory refresh (students + teachers + staff) + mapping service (manual/CSV, conflicts, unknown-person review). |
 | `dashboard/` | Local Flask+waitress UI; session auth (PBKDF2), CSRF + origin checks, login throttling; JSON API. |

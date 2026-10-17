@@ -41,6 +41,7 @@ class FakeIclockServer:
         self.attlog_posts: list[dict] = []      # {"sn": str, "lines": [...]}
         self.user_reply = "OK"
         self.rejected_serials: set[str] = set()
+        self.command_acks: list[dict] = []    # {"sn", "body", "fields"}
         self.poll_status = 200
         self.poll_body = "OK"
         self.upload_reply: str | None = None
@@ -75,6 +76,16 @@ class FakeIclockServer:
 
             def do_POST(self):
                 parsed = urlparse(self.path)
+                if parsed.path.endswith("/devicecmd"):
+                    sn = parse_qs(parsed.query).get("SN", [""])[0]
+                    length = int(self.headers.get("Content-Length", "0"))
+                    body = self.rfile.read(length).decode("utf-8", errors="replace")
+                    fields = dict(
+                        part.split("=", 1) for part in body.replace("\n", "&").split("&")
+                        if "=" in part
+                    )
+                    server.command_acks.append({"sn": sn, "body": body, "fields": fields})
+                    return self._reply(200, "OK")
                 if not parsed.path.endswith("/cdata"):
                     return self._reply(404, "nope")
                 if server.upload_location:

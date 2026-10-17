@@ -29,6 +29,14 @@ without depending on ZKTime 5.0.
   serial by serial, whether it really *accepts* attendance: handshake,
   presence, an **empty** ATTLOG POST (no fake punch is ever written) and the
   USER table. A green "EMS online" badge is never treated as proof.
+- **`doctor` self-check** — one read-only pass over SQLite (integrity,
+  schema, locks, counts), the Windows Credential Manager token, EMS
+  reachability, every registered serial, queued ADMS commands and the recent
+  error lines, with an exact fix for each WARN/FAIL.
+- **Safe ADMS command handling** — read-only `DATA QUERY` requests are
+  answered and acknowledged via `/iclock/devicecmd`; destructive commands are
+  refused once (never executed), counted, and acknowledged as failures so a
+  server-side queue stops retrying them every 30 seconds.
 - **EMS-serial override** per device, so a school that registered a terminal
   in ApexityEdu under a different serial can still push successfully.
 - **Native Windows desktop app** (no browser): Overview, Devices, Device Users,
@@ -40,7 +48,7 @@ without depending on ZKTime 5.0.
   sync every 15 minutes, so the data still reaches ApexityEdu when the
   app is closed between shifts.
 
-> **Honest status.** The bridge software is complete and covered by 230
+> **Honest status.** The bridge software is complete and covered by 257
 > automated tests. A branded Windows installer produces `ApexityEduBridge.exe`
 > with the product logo (Start Menu, Desktop, tray). Verified against the live
 > server on 2026-10-16: `apexityedu.com` **already speaks ZKTeco
@@ -88,6 +96,7 @@ Full guide: [`docs/WINDOWS_DEPLOYMENT.md`](docs/WINDOWS_DEPLOYMENT.md).
 .\scripts\Service-Control.ps1 status     # start | stop | restart | status
 .\.venv\Scripts\python.exe -m apexity_bridge probe-ems                 # which protocol does the EMS speak?
 .\.venv\Scripts\python.exe -m apexity_bridge verify-ems                 # does it really ACCEPT our punches?
+.\.venv\Scripts\python.exe -m apexity_bridge doctor                     # read-only DB + token + EMS + command check
 .\.venv\Scripts\python.exe -m apexity_bridge scan                      # discovery + identification (read-only)
 .\.venv\Scripts\python.exe -m apexity_bridge scan --ip 192.168.0.201 --read-attendance 5
 .\.venv\Scripts\python.exe -m apexity_bridge set-token                 # EMS token → Credential Manager
@@ -114,7 +123,7 @@ Manager, the dashboard password is stored as a PBKDF2 hash.
 
 ```bash
 python3 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
-./scripts/run_tests.sh                     # 230 automated tests
+./scripts/run_tests.sh                     # 250+ automated tests
 ./scripts/dev_run.sh                       # run the bridge in the foreground
 ```
 
@@ -128,6 +137,7 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
 | [`docs/WINDOWS_PACKAGING.md`](docs/WINDOWS_PACKAGING.md) | **Windows .exe + installer** (PyInstaller + Inno Setup) |
 | [`docs/ACCEPTANCE_TEST_PLAN.md`](docs/ACCEPTANCE_TEST_PLAN.md) | 16-scenario on-site verification gate |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | diagnostics bundle, common issues |
+| [`docs/SETTINGS_AND_SYNC_TROUBLESHOOTING.md`](docs/SETTINGS_AND_SYNC_TROUBLESHOOTING.md) | **step-by-step recovery** for a frozen Settings page, `ems.command_refused`, database/token problems, serial registration and Celery/backend sync errors |
 
 ## Security & privacy
 

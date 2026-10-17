@@ -58,12 +58,19 @@ def _iclock_steps(client, serial: str, users: list[dict] | None, push_users: boo
         return steps, "handshake failed — the EMS URL or network is unreachable"
 
     try:
+        from .iclock import command_is_read_only
         commands = client.poll_commands(serial)
+        safe = [c for c in commands if command_is_read_only(c)]
+        refused = [c for c in commands if not command_is_read_only(c)]
         steps.append({
             "step": "presence",
             "request": f"GET …/getrequest?SN={serial}",
             "ok": True,
-            "reply": f"{len(commands)} pending command(s)",
+            "reply": f"{len(commands)} pending command(s): "
+                     f"{len(safe)} read-only, {len(refused)} refused",
+            "commands": commands,
+            "read_only": safe,
+            "refused": refused,
         })
     except Exception as exc:                     # noqa: BLE001
         steps.append({"step": "presence", "ok": False, "error": str(exc)[:300]})
