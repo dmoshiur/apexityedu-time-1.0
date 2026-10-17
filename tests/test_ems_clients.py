@@ -290,13 +290,32 @@ def test_iclock_poll_rejects_invalid_replies(iclock_server, body):
 def test_iclock_commands_are_only_logged(iclock_server, monkeypatch):
     from unittest.mock import Mock
     warning = Mock()
+    debug = Mock()
     monkeypatch.setattr("apexity_bridge.ems.iclock.log.warning", warning)
+    monkeypatch.setattr("apexity_bridge.ems.iclock.log.debug", debug)
     iclock_server.poll_body = "C:1:DATA QUERY USERINFO\nC:2:CLEAR DATA"
     commands = IclockEmsClient(iclock_server.url).poll_commands("SN-A")
     assert len(commands) == 2
-    assert warning.call_count == 2
-    assert "not executed" in warning.call_args.args[0]
+    # The transport is deliberately quiet; the worker audits refusals once.
+    assert warning.call_count == 0
+    assert debug.call_count == 2
     assert iclock_server.accepted == []
+
+
+def test_iclock_devicecmd_ack_matches_the_adms_wire_format(iclock_server):
+    client = IclockEmsClient(iclock_server.url)
+    client.acknowledge_command("SN-A", command_id="12",
+                               command="DATA QUERY USERINFO", return_code=0)
+    assert iclock_server.command_acks[0]["sn"] == "SN-A"
+    assert iclock_server.command_acks[0]["fields"] == {
+        "ID": "12", "Return": "0", "CMD": "DATA QUERY USERINFO",
+    }
+
+
+def test_iclock_denied_poll_explains_the_serial_problem(iclock_server):
+    iclock_server.poll_body = "DENIED"
+    with pytest.raises(EmsProtocolError, match="denied presence"):
+        IclockEmsClient(iclock_server.url).poll_commands("SN-NOT-REGISTERED")
 
 
 def test_iclock_registration_preserves_auth_error(iclock_server):

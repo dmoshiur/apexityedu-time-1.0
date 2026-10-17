@@ -218,6 +218,62 @@ DB_MANAGED_KEYS = {
     "users_sync_interval": ("users_sync_interval", int),
 }
 
+# Guard rails applied by every writer (dashboard API and desktop façade).  An
+# invalid value used to be stored verbatim, which then crashed whichever
+# component read it; rejecting it at the edge keeps a typo in one web form from
+# taking the whole sync worker offline.
+DB_MANAGED_MINIMUMS = {
+    "scan_interval": 60,
+    "sync_interval": 5,
+    "collect_interval": 5,
+    "roster_interval": 60,
+    "users_sync_interval": 60,
+}
+
+
+def normalise_db_setting(key: str, raw) -> tuple[str, str | None]:
+    """Return (stored_value, error).
+
+    ``""`` means "remove the override and fall back to .env".  Empty is legal
+    for every key — including ``ems_protocol``, whose form option is literally
+    "(from environment)".  That used to be rejected as an invalid protocol,
+    which made every Save on the Settings page fail.
+    """
+    if key not in DB_MANAGED_KEYS:
+        return "", f"unknown setting {key!r}"
+    _attr, caster = DB_MANAGED_KEYS[key]
+    value = "" if raw is None else str(raw).strip()[:300]
+    if value in ("", "None"):
+        return "", None
+    if key == "ems_protocol":
+        if value not in ("auto", "iclock", "rest"):
+            return "", "EMS protocol must be auto, iclock or rest (or empty for .env)"
+        return value, None
+    if key == "ems_base_url":
+        if not value.startswith(("https://", "http://")):
+            return "", "EMS base URL must start with https:// (or http:// on localhost)"
+        if value.startswith("http://") and not _is_localhost(value):
+            return "", ("plaintext HTTP is only allowed for localhost; use https:// "
+                        "for a remote EMS")
+        return value, None
+    if caster is _as_bool:
+        lowered = value.lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return "1", None
+        if lowered in {"0", "false", "no", "off"}:
+            return "0", None
+        return "", f"{key} must be 1 or 0"
+    if caster is int:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return "", f"{key} must be a whole number"
+        minimum = DB_MANAGED_MINIMUMS.get(key)
+        if minimum is not None and number < minimum:
+            return "", f"{key} must be at least {minimum}"
+        return str(number), None
+    return value, None
+
 
 class SettingsView:
     """Read-through view: DB override -> Config attribute."""

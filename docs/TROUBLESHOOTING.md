@@ -4,6 +4,17 @@ First stop: **Dashboard → Logs** and `…\ApexityEduBridge\logs\bridge.log`.
 Generate a support bundle from **Settings → Export diagnostics bundle** (all
 secrets are redacted) before contacting support.
 
+> **Settings page frozen, `ems.command_refused` repeating, or a Celery error?
+> Start with the dedicated walkthrough:
+> [`SETTINGS_AND_SYNC_TROUBLESHOOTING.md`](SETTINGS_AND_SYNC_TROUBLESHOOTING.md).**
+> It covers the database, the Windows Credential Manager token, serial
+> registration, the ADMS command acknowledgement and which errors belong to
+> the ApexityEdu backend. The one-command overview is:
+>
+> ```powershell
+> python -m apexity_bridge doctor
+> ```
+
 ---
 
 ## Device problems
@@ -112,8 +123,12 @@ approximately every 30 seconds, independently of new punches. Check:
    the EMS UI is not necessarily the shared-token extension this bridge uses.
    Do not rotate keys blindly or publish them in a screenshot.
 5. `getrequest` fails: ask the EMS team to check that route and its `last_seen`
-   update logic. Polling commands are only logged, not executed; **Sync users**
+   update logic. Read-only `DATA QUERY` commands are answered and acknowledged
+   via `/iclock/devicecmd`; destructive commands are refused (audited once as
+   `ems.command_refused`) and acknowledged with a non-zero Return. **Sync users**
    in the EMS does not cause the bridge to apply device administration commands.
+   See [`SETTINGS_AND_SYNC_TROUBLESHOOTING.md`](SETTINGS_AND_SYNC_TROUBLESHOOTING.md)
+   §6 for the decision table.
 
 After installing an updated build, fully exit/restart the old bridge process
 (including its tray/background instance). Create one new test punch and allow
@@ -185,6 +200,10 @@ legacy `/students` shape: it should return `person_type` per row
 - Check that you see *password-setup* on first run: passwords are set via
   `python -m apexity_bridge set-admin-password` — there are no default
   credentials.
+- Page opens but fields stay `…` / buttons do nothing → browser JavaScript
+  error, usually a stale v1.2.0 asset. Hard-reload with **Ctrl+F5**, confirm
+  `--version` is 1.3.0+, then follow
+  [`SETTINGS_AND_SYNC_TROUBLESHOOTING.md`](SETTINGS_AND_SYNC_TROUBLESHOOTING.md) §1.
 
 ### Duplicate instance warnings
 The single-instance mutex refused a second start. Stop the Task Scheduler task

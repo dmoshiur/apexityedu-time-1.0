@@ -144,6 +144,23 @@ def test_iclock_user_table_format_and_upload(iclock_server):
     assert iclock_server.user_uploads[0]["users"] == {"7": "Rahim", "2": "Karim Sir"}
 
 
+def test_wire_lines_survive_hostile_names_and_pins():
+    """A tab/newline must never split one record into two on the server."""
+    attlog = IclockEmsClient.format_attlog_line({
+        "device_user_id": "7\t8", "event_timestamp": "2026-10-15T08:00:00",
+        "status": 0, "verify_mode": 1,
+    })
+    assert attlog.count("\t") == 6
+    assert "\n" not in attlog
+
+    user = IclockEmsClient.format_user_line({
+        "user_id": "7\t8", "name": "Rahim\nKarim", "privilege": 0,
+    })
+    assert user.count("\t") == 6
+    assert "PIN=7 8" in user
+    assert "Name=Rahim Karim" in user
+
+
 def test_iclock_user_upload_rejects_non_ok_reply(iclock_server):
     iclock_server.user_reply = "<html>login</html>"
     client = IclockEmsClient(iclock_server.url)
@@ -311,6 +328,52 @@ def test_commands_can_be_disabled(ctx, iclock_server):
     worker.status.update(online=True)
     worker._handle_commands(device, ["DATA QUERY USERINFO"])
     assert iclock_server.user_uploads == []
+
+
+def test_read_only_commands_are_acknowledged(ctx, iclock_server):
+    device = seed_device(ctx.repos, serial="SN-ACK")
+    _seed_users(ctx.repos, "SN-ACK")
+    worker = _worker(ctx, iclock_server.url, "iclock")
+    worker.status.update(online=True)
+
+    worker._handle_commands(device, ["C:41:DATA QUERY USERINFO"])
+
+    assert len(iclock_server.user_uploads) == 1
+    ack = iclock_server.command_acks[-1]
+    assert ack["sn"] == "SN-ACK"
+    assert ack["fields"]["ID"] == "41"
+    assert ack["fields"]["Return"] == "0"
+    assert ack["fields"]["CMD"] == "DATA QUERY USERINFO"
+    assert "DATA QUERY USERINFO" in worker.status.snapshot()["commands_acknowledged"]
+
+
+def test_repeated_refused_command_is_audited_once_and_acked_as_failure(ctx, iclock_server):
+    device = seed_device(ctx.repos, serial="SN-REFUSE")
+    worker = _worker(ctx, iclock_server.url, "iclock")
+    worker.status.update(online=True)
+
+    for _ in range(3):
+        worker._handle_commands(device, ["C:99:REBOOT"])
+
+    refused = [a for a in _audit(ctx) if a["action"] == "ems.command_refused"]
+    assert len(refused) == 1                       # one audit, not one per poll
+    stats = worker.status.snapshot()["commands_refused"]["REBOOT"]
+    assert stats["count"] == 3
+    assert len(iclock_server.command_acks) == 3
+    assert all(a["fields"]["Return"] == "-1" for a in iclock_server.command_acks)
+    assert iclock_server.accepted == []
+
+
+def test_biometric_query_is_acknowledged_as_unsupported(ctx, iclock_server):
+    device = seed_device(ctx.repos, serial="SN-BIO")
+    worker = _worker(ctx, iclock_server.url, "iclock")
+    worker.status.update(online=True)
+
+    worker._handle_commands(device, ["C:5:DATA QUERY BIODATA"])
+
+    assert iclock_server.command_acks[-1]["fields"]["Return"] == "-1004"
+    unsupported = worker.status.snapshot()["commands_unsupported"]
+    assert "DATA QUERY BIODATA" in unsupported
 
 
 def _audit(ctx):

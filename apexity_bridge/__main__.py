@@ -15,6 +15,7 @@ Commands
                          (this is what the scheduled task runs every N minutes)
     verify-ems           prove whether the EMS really ACCEPTS attendance for
                          each device serial (handshake + empty ATTLOG + USER)
+    doctor               read-only self-check: DB, token, EMS, commands, logs
     set-token            store the EMS device token in the OS credential store
     delete-token         revoke/remove the stored EMS device token
     set-admin-password   set/change the dashboard admin password (PBKDF2 hash)
@@ -111,6 +112,11 @@ def main(argv: list[str] | None = None) -> int:
     ver_p.add_argument("--no-users", action="store_true",
                        help="skip publishing the device user table")
 
+    doc_p = sub.add_parser("doctor", help="read-only self-check (DB, token, EMS, logs)")
+    doc_p.add_argument("--no-network", action="store_true",
+                       help="skip every EMS call (offline report)")
+    doc_p.add_argument("--json", action="store_true", help="machine-readable output")
+
     sub.add_parser("set-token", help="store the EMS device token in the OS credential store")
     sub.add_parser("delete-token", help="remove the stored EMS device token")
     sub.add_parser("set-admin-password", help="set the dashboard admin password")
@@ -138,7 +144,8 @@ def main(argv: list[str] | None = None) -> int:
         "scan": _cmd_scan, "probe-ems": _cmd_probe_ems,
         "push-users": _cmd_push_users, "push-people": _cmd_push_people,
         "sync-now": _cmd_sync_now,
-        "verify-ems": _cmd_verify_ems, "set-token": _cmd_set_token,
+        "verify-ems": _cmd_verify_ems, "doctor": _cmd_doctor,
+        "set-token": _cmd_set_token,
         "delete-token": _cmd_delete_token,
         "set-admin-password": _cmd_set_admin_password,
         "backup": _cmd_backup, "export-diagnostics": _cmd_diagnostics,
@@ -411,6 +418,35 @@ def _cmd_verify_ems(config, args) -> int:
             push_users=False if args.no_users else None,
         )
         print(format_report(report))
+        return 0 if report.get("ok") else 1
+    finally:
+        db.close_all()
+
+
+def _cmd_doctor(config, args) -> int:
+    """Read-only self-check across database, token, EMS and logs."""
+    import json
+
+    from .config import SettingsView
+    from .database.repositories import open_migrated_database
+    from .diagnostics import build_doctor_report, format_doctor_report
+    from .security.secrets import SecretStore
+    from .service import BridgeContext
+    from .sync.worker import EmsStatus, SyncWorker
+
+    db, repos = open_migrated_database(config.db_path)
+    try:
+        ctx = BridgeContext(
+            version=__version__, config=config,
+            settings=SettingsView(config, repos["settings"]),
+            repos=repos, secret_store=SecretStore(config.data_dir),
+            ems_status=EmsStatus(), stop_event=threading.Event(),
+        )
+        if not args.no_network:
+            ctx.sync_worker = SyncWorker(ctx)
+        report = build_doctor_report(ctx, network=not args.no_network)
+        print(json.dumps(report, indent=2, default=str) if args.json
+              else format_doctor_report(report))
         return 0 if report.get("ok") else 1
     finally:
         db.close_all()

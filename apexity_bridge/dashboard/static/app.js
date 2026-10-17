@@ -378,11 +378,64 @@ async function loadAppLog() {
 async function loadSettings() {
   const d = await api("/api/settings");
   const form = document.getElementById("settings-form");
-  for (const [key, val] of Object.entries(d.settings)) {
-    const input = form.querySelector(`[name=${CSS.escape(key)}]`);
-    if (input && val !== null && val !== undefined) input.value = val;
+  if (form) {
+    for (const [key, val] of Object.entries(d.settings || {})) {
+      const input = form.querySelector(`[name=${CSS.escape(key)}]`);
+      if (input && val !== null && val !== undefined) input.value = val;
+    }
   }
-  document.getElementById("token-configured").textContent = d.token_configured ? "yes (in credential store)" : "NO — save a token below";
+  const tokenEl = document.getElementById("token-configured");
+  if (tokenEl) {
+    tokenEl.textContent = d.token_error
+      ? `credential store error — ${d.token_error}`
+      : d.token_configured
+        ? "yes (in credential store)"
+        : "NO — save a token below";
+  }
+  renderCommandStatus(d.ems_commands || {});
+}
+
+function renderCommandStatus(status) {
+  const box = document.getElementById("ems-command-status");
+  if (!box) return;
+  const refused = Object.entries(status.commands_refused || {});
+  const unsupported = Object.entries(status.commands_unsupported || {});
+  const ackError = status.commands_ack_error;
+  const parts = [];
+  if (refused.length) {
+    parts.push(`<div class="notice warn"><strong>EMS command(s) refused:</strong> ` +
+      refused.map(([sig, s]) =>
+        `${esc(sig)} × ${esc(s.count || 1)} — ${esc((s.example || "").slice(0, 80))}`
+      ).join("; ") +
+      `. The bridge is read-only: CLEAR/REBOOT/SET are never executed. ` +
+      `Ask the EMS admin to remove the command, or set “Answer read-only EMS commands” to no.</div>`);
+  }
+  if (unsupported.length) {
+    parts.push(`<div class="notice warn"><strong>Unsupported EMS command(s):</strong> ` +
+      unsupported.map(([sig, s]) => `${esc(sig)} × ${esc(s.count || 1)}`).join("; ") +
+      `. Biometric templates are never read or uploaded.</div>`);
+  }
+  if (ackError) {
+    parts.push(`<div class="notice warn"><strong>Command acknowledgement failed:</strong> ` +
+      `${esc(ackError)} — the EMS may not implement /iclock/devicecmd.</div>`);
+  }
+  box.innerHTML = parts.join("") ||
+    (Object.keys(status.commands_seen || {}).length
+      ? "EMS command channel: no refused commands."
+      : "EMS command channel: no commands received yet.");
+}
+
+async function runDoctor() {
+  const box = document.getElementById("doctor-result");
+  if (!box) return;
+  box.classList.remove("hidden");
+  box.textContent = "running read-only checks…";
+  try {
+    const d = await api("/api/diagnostics/doctor", { method: "POST", json: {} });
+    box.textContent = d.text || JSON.stringify(d.report, null, 2);
+  } catch (err) {
+    box.textContent = `self-check failed: ${err.message}`;
+  }
 }
 
 async function saveSettings(ev) {
@@ -727,10 +780,12 @@ if (page === "device-users") {
   }
 
   if (page === "settings") {
-
-  if (page === "settings") {
-    document.getElementById("settings-form").addEventListener("submit", saveSettings);
-    document.getElementById("btn-ems-test").addEventListener("click", testEms);
+    const settingsForm = document.getElementById("settings-form");
+    if (settingsForm) settingsForm.addEventListener("submit", saveSettings);
+    const emsTestBtn = document.getElementById("btn-ems-test");
+    if (emsTestBtn) emsTestBtn.addEventListener("click", testEms);
+    const doctorBtn = document.getElementById("btn-doctor");
+    if (doctorBtn) doctorBtn.addEventListener("click", runDoctor);
     const tokenForm = document.getElementById("token-form");
     if (tokenForm) tokenForm.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -791,6 +846,10 @@ if (page === "device-users") {
         flash(err.message, true);
       }
     });
-    loadSettings();
+    loadSettings().catch((err) => {
+      const status = document.getElementById("settings-status");
+      if (status) status.textContent = `Could not load settings: ${err.message}`;
+      flash(`Could not load settings: ${err.message}`, true);
+    });
   }
 });

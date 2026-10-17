@@ -94,9 +94,16 @@ device**, not the EMS student id.
   A failed serial does not stop presence checks for other registered devices.
   Per-serial handshake/poll results are available in the overview API under
   `ems.device_presence`; errors are also in the overview and application log.
-- Commands received through polling are **logged only**, never executed or
-  acknowledged as executed. User synchronization and device administration
-  are not added by presence polling.
+- Commands received through polling are **never executed** unless they are the
+  read-only `DATA QUERY USERINFO` / `DATA QUERY ATTLOG` requests that real
+  terminals also answer. The bridge acknowledges the result to
+  `POST /iclock/devicecmd?SN=<serial>` (`ID=<id>&Return=<code>&CMD=<command>`):
+  `Return=0` only for a genuinely answered command, `-1` for a refused
+  destructive/admin command, and `-1004` for biometric templates. Destructive
+  commands (`CLEAR`/`DELETE`/`REBOOT`/`SET`/`ENROLL`…) are audited once as
+  `ems.command_refused` and never run. A server that omits `devicecmd` will keep
+  re-queueing the command; the bridge still refuses it and does not spam the
+  audit log.
 - The configured token is still the documented shared-token extension
   (`AuthToken` and `X-Auth-Token`). An EMS with a different or per-device API
   key contract needs explicit integration; a generic handshake does not

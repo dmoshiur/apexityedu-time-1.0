@@ -28,7 +28,7 @@ from ..ems.base import (
     HealthResult,
 )
 from ..ems.factory import build_ems_client
-from ..ems.iclock import command_is_read_only, command_verb
+from ..ems.iclock import command_is_read_only, parse_command
 from ..students.directory import refresh_people
 from ..timeutils import iso_utc, seconds_from_now
 from .backoff import backoff_seconds
@@ -65,6 +65,10 @@ class EmsStatus:
     users_pushed_at: str | None = None
     users_last_error: str | None = None
     commands_seen: dict = field(default_factory=dict)
+    commands_refused: dict = field(default_factory=dict)      # signature → stats
+    commands_unsupported: dict = field(default_factory=dict)
+    commands_acknowledged: dict = field(default_factory=dict)
+    commands_ack_error: str | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def update(self, **changes) -> None:
@@ -90,6 +94,10 @@ class EmsStatus:
                 "users_pushed_at": self.users_pushed_at,
                 "users_last_error": self.users_last_error,
                 "commands_seen": dict(self.commands_seen),
+                "commands_refused": {k: dict(v) for k, v in self.commands_refused.items()},
+                "commands_unsupported": {k: dict(v) for k, v in self.commands_unsupported.items()},
+                "commands_acknowledged": dict(self.commands_acknowledged),
+                "commands_ack_error": self.commands_ack_error,
             }
 
 
@@ -105,6 +113,8 @@ class SyncWorker:
         self._next_roster = 0.0
         self._next_users = 0.0
         self._audited_once: set[str] = set()
+        self._refused_logged: set[str] = set()
+        self._ack_errors_logged: set[str] = set()
         self._build_client()
 
     # -------------------------------------------------------------- lifecycle --
@@ -406,60 +416,153 @@ class SyncWorker:
         """Answer the *read-only* commands an ADMS server sends via getrequest.
 
         A real terminal answers ``DATA QUERY USERINFO`` by uploading its user
-        table and ``DATA QUERY ATTLOG`` by re-uploading punches. The bridge does
-        the same for those two, and refuses everything else — it is a collector,
-        not a remote control. Destructive commands (CLEAR/DELETE/REBOOT/SET…)
-        are logged and audited but never executed.
+        table and ``DATA QUERY ATTLOG`` by re-uploading punches, then reports
+        the result to ``POST /iclock/devicecmd`` (``ID=<id>&Return=<code>``).
+        Without that ack a server keeps re-queueing the same command and sends
+        it again on every heartbeat — the classic reason one refused command
+        fills the log every 30 seconds.
+
+        The bridge is a collector, not a remote control: destructive commands
+        (CLEAR/DELETE/REBOOT/SET…) are never executed. They are audited **once
+        per command type**, counted in the status snapshot, and acknowledged
+        with a non-zero Return so the EMS can retire them instead of retrying
+        forever.
         """
         if not commands:
             return
         if not bool(getattr(self.ctx.settings, "ems_execute_commands", True)):
+            log.debug("EMS sent %d command(s) but command answering is disabled",
+                      len(commands))
             return
-        serial = device.get("serial_number")
-        for command in commands:
-            verb = command_verb(command)
-            if not command_is_read_only(command):
-                self.ctx.repos["audit"].log(
-                    actor="system", action="ems.command_refused", entity="device",
-                    entity_id=serial, detail=f"{command!r} — read-only bridge, refused",
-                )
-                log.warning("EMS command refused (not executed): %s", command)
+        for raw in commands:
+            record = parse_command(raw)
+            self._mark_command_seen(record.verb)
+            if not command_is_read_only(record.body):
+                self._refuse_command(device, record)
+                self._ack_command(device, record, return_code=-1)
                 continue
-            if verb.startswith("DATA QUERY BIODATA") or verb.startswith("DATA QUERY FINGERTMP"):
-                log.info("ignored %s — the bridge never handles biometric templates", verb)
+            if record.verb.startswith(("DATA QUERY BIODATA", "DATA QUERY FINGERTMP")):
+                self._mark_command_unsupported(device, record,
+                                               "biometric templates are never handled")
+                self._ack_command(device, record, return_code=-1004)
                 continue
-            if verb.startswith("DATA QUERY USERINFO"):
-                self._sync_device_users()
-            elif verb.startswith("DATA QUERY ATTLOG"):
-                self._replay_events(device)
+            ok = True
+            if record.verb.startswith("DATA QUERY USERINFO"):
+                result = self._sync_device_users()
+                ok = not (isinstance(result, dict)
+                          and result.get("error") and not result.get("pushed"))
+            elif record.verb.startswith("DATA QUERY ATTLOG"):
+                ok = self._replay_events(device)
             else:
-                log.debug("EMS command %s needs no data response", verb)
-            seen = dict(self.status.commands_seen)
-            seen[verb] = iso_utc()
-            self.status.update(commands_seen=seen)
+                log.debug("EMS command %s needs no data response", record.verb)
+            self._ack_command(device, record, return_code=0 if ok else -1)
 
-    def _replay_events(self, device: dict) -> None:
+    def _mark_command_seen(self, verb: str) -> None:
+        seen = dict(self.status.commands_seen)
+        seen[verb] = iso_utc()
+        self.status.update(commands_seen=seen)
+
+    def _refuse_command(self, device: dict, record) -> None:
+        serial = device.get("serial_number")
+        refused = {k: dict(v) for k, v in self.status.commands_refused.items()}
+        stats = refused.get(record.signature) or {}
+        stats.update({
+            "count": int(stats.get("count", 0)) + 1,
+            "first_seen": stats.get("first_seen") or iso_utc(),
+            "last_seen": iso_utc(),
+            "example": record.raw[:160],
+            "reason": "read-only bridge — destructive commands are never executed",
+        })
+        refused[record.signature] = stats
+        self.status.update(commands_refused=refused)
+        if record.signature not in self._refused_logged:
+            self._refused_logged.add(record.signature)
+            self.ctx.repos["audit"].log(
+                actor="system", action="ems.command_refused", entity="device",
+                entity_id=serial, detail=f"{record.raw!r} — read-only bridge, refused",
+            )
+            log.warning("EMS command refused (not executed): %s", record.raw[:200])
+        else:
+            log.debug("EMS command still refused (count=%s): %s",
+                      stats["count"], record.raw[:200])
+
+    def _mark_command_unsupported(self, device: dict, record, reason: str) -> None:
+        serial = device.get("serial_number")
+        unsupported = {k: dict(v) for k, v in self.status.commands_unsupported.items()}
+        stats = unsupported.get(record.signature) or {}
+        stats.update({
+            "count": int(stats.get("count", 0)) + 1,
+            "first_seen": stats.get("first_seen") or iso_utc(),
+            "last_seen": iso_utc(),
+            "example": record.raw[:160],
+            "reason": reason,
+        })
+        unsupported[record.signature] = stats
+        self.status.update(commands_unsupported=unsupported)
+        self._audit_once(
+            f"ems.command_unsupported:{record.signature}",
+            f"{record.raw!r} — {reason}",
+        )
+        log.info("EMS command %s not supported: %s", record.signature, reason)
+
+    def _ack_command(self, device: dict, record, *, return_code: int) -> None:
+        """Tell the EMS what happened to a command (best effort).
+
+        ``Return=0`` is only sent after the bridge actually answered the
+        request. Destructive or unsupported commands get a non-zero code —
+        never a false success. If the EMS does not implement ``devicecmd`` the
+        error is recorded once (it is a server capability gap, not a reason to
+        mark the whole presence check failed).
+        """
+        ack = getattr(self._client, "acknowledge_command", None)
+        if ack is None:
+            return
+        if not record.command_id:
+            # Some servers omit the id on informational commands; there is
+            # nothing to acknowledge in that case (and it is not an error).
+            log.debug("not acknowledging %s: no C:<id> envelope", record.signature)
+            return
+        target = ems_serial_for(device) if device else ""
+        try:
+            ack(target, command_id=record.command_id, command=record.body,
+                return_code=return_code)
+        except EmsError as exc:
+            self._record_ack_error(record.signature, str(exc))
+            return
+        acked = dict(self.status.commands_acknowledged)
+        acked[record.signature] = {"at": iso_utc(), "return": return_code}
+        self.status.update(commands_acknowledged=acked)
+
+    def _record_ack_error(self, signature: str, error: str) -> None:
+        self.status.update(commands_ack_error=error[:300])
+        if signature in self._ack_errors_logged:
+            return
+        self._ack_errors_logged.add(signature)
+        log.warning("EMS command acknowledgement failed (%s): %s", signature, error)
+
+    def _replay_events(self, device: dict) -> bool:
         """Re-upload this terminal's punches after a DATA QUERY ATTLOG request.
 
         Safe by contract: iClock servers deduplicate on SN+PIN+timestamp+status,
-        so replaying records the EMS already has changes nothing.
+        so replaying records the EMS already has changes nothing. Returns
+        whether the command was satisfied (used for the devicecmd Return code).
         """
         serial = device.get("serial_number")
         if not serial:
-            return
+            return False
         rows = self.ctx.repos["db"].query(
             """SELECT * FROM attendance_events WHERE device_serial = ?
                ORDER BY event_timestamp DESC LIMIT ?""",
             (serial, MAX_COMMAND_REPLAY),
         )
         if not rows:
-            return
+            return True
         batch = [{k: r[k] for k in r.keys()} for r in rows]
         try:
             outcome = self._client.push_attendance(batch, serial=ems_serial_for(device))
         except EmsError as exc:
             log.warning("ATTLOG replay for SN %s failed: %s", serial, exc)
-            return
+            return False
         accepted = list(outcome.accepted_ids or []) + list(outcome.duplicates or [])
         if accepted:
             self.ctx.repos["events"].mark_synced(accepted, remote_ids=outcome.remote_ids)
@@ -469,6 +572,7 @@ class SyncWorker:
             result="success" if len(accepted) == len(batch) else "partial",
             detail="DATA QUERY ATTLOG replay",
         )
+        return len(accepted) == len(batch)
 
     # ----------------------------------------------------------------- pushes --
     def push_due_events(self) -> int:

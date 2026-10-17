@@ -1215,11 +1215,15 @@ class SettingsPage(QWidget):
         verify.clicked.connect(self._verify)
         diag2 = QPushButton("Verify + copy report")
         diag2.clicked.connect(lambda: self._verify(copy=True))
+        doctor = QPushButton("Run backend self-check")
+        doctor.setObjectName("primary")
+        doctor.clicked.connect(self._doctor)
         row = QHBoxLayout()
         row.addWidget(save)
         row.addWidget(test)
         row.addWidget(verify)
         row.addWidget(diag2)
+        row.addWidget(doctor)
         row.addStretch()
         form.addRow(row)
         self.token_lbl = QLabel("")
@@ -1400,6 +1404,20 @@ class SettingsPage(QWidget):
             _info(self, "Report copied to the clipboard.\n\n" + text)
         else:
             _info(self, text)
+
+    def _doctor(self) -> None:
+        """Read-only database + token + EMS + command self-check."""
+        if getattr(self, "_doctor_worker", None) is not None and self._doctor_worker.isRunning():
+            return
+
+        def work():
+            return self.facade.doctor(network=True)
+
+        self._doctor_worker = Worker(work)
+        self._doctor_worker.done.connect(
+            lambda report: _info(self, report.get("text") or str(report)))
+        self._doctor_worker.failed.connect(lambda message: _warn(self, message))
+        self._doctor_worker.start()
 
     def _save_token(self) -> None:
         try:

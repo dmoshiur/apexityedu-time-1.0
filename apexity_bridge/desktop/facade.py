@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ..config import DB_MANAGED_KEYS
+from ..config import DB_MANAGED_KEYS, normalise_db_setting
 from ..dashboard.app import _device_online, tail_log_file
 from ..dashboard.auth import (
     SETTINGS_PASSWORD_HASH, SETTINGS_USERNAME, admin_username,
@@ -455,11 +455,20 @@ class DesktopFacade:
     # ------------------------------------------------------------ settings --
     def settings(self) -> dict:
         repos = self.ctx.repos
+        token_configured, token_error = False, None
+        if self.ctx.secret_store is not None:
+            try:
+                token_configured = bool(self.ctx.secret_store.has_ems_token())
+            except Exception as exc:        # credential store unavailable
+                token_error = str(exc)[:300]
+                log.warning("credential store check failed: %s", exc)
         return {
             "settings": {k: repos["settings"].get(k) for k in DB_MANAGED_KEYS},
             "effective": {k: str(getattr(self.ctx.settings, attr))
                           for k, (attr, _c) in DB_MANAGED_KEYS.items()},
-            "token_configured": bool(self.ctx.secret_store and self.ctx.secret_store.has_ems_token()),
+            "token_configured": token_configured,
+            "token_error": token_error,
+            "ems_commands": self.ctx.ems_status.snapshot(),
         }
 
     def save_settings(self, payload: dict) -> list[str]:
@@ -468,15 +477,17 @@ class DesktopFacade:
         for key in DB_MANAGED_KEYS:
             if key not in payload:
                 continue
-            value = str(payload.get(key) or "").strip()[:300]
-            if key == "ems_protocol" and value and value not in ("auto", "iclock", "rest"):
-                raise FacadeError("ems_protocol must be auto, iclock or rest")
+            value, error = normalise_db_setting(key, payload.get(key))
+            if error:
+                raise FacadeError(error)
             old = repos["settings"].get(key)
-            if value in ("", "None"):
-                repos["settings"].delete(key)
+            if value == "":
+                if old is not None:
+                    repos["settings"].delete(key)
+                    changed.append(key)
             elif value != old:
                 repos["settings"].set(key, value)
-            changed.append(key)
+                changed.append(key)
         if changed:
             repos["audit"].log(actor=self.actor, action="settings.update",
                                detail=",".join(changed))
@@ -538,3 +549,14 @@ class DesktopFacade:
         self.ctx.repos["audit"].log(actor=self.actor, action="diagnostics.export",
                                     detail=path.name)
         return path
+
+    def doctor(self, *, network: bool = True) -> dict:
+        """Read-only self-check: database, token, EMS and command state."""
+        from ..diagnostics import build_doctor_report, format_doctor_report
+        report = build_doctor_report(self.ctx, network=network)
+        report["text"] = format_doctor_report(report)
+        self.ctx.repos["audit"].log(
+            actor=self.actor, action="diagnostics.doctor",
+            detail=f"ok={report['ok']} failures={len(report['failures'])} "
+                   f"warnings={len(report['warnings'])}")
+        return report

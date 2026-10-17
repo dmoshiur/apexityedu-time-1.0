@@ -49,11 +49,22 @@ class SecretStore:
             return _FileBackend(self.data_dir / "secrets.json")
 
     # ------------------------------------------------------------------- API ---
+    @property
+    def backend_name(self) -> str:
+        return type(self._backend).__name__.lstrip("_")
+
     def set_ems_token(self, token: str) -> None:
+        # A failed *write* must raise: claiming "saved" while the Credential
+        # Manager refused the secret would be a lie. Reads are different — a
+        # broken backend must not take the whole Settings page down.
         self._backend.set(SERVICE_EMS_TOKEN, token)
 
     def get_ems_token(self) -> str | None:
-        return self._backend.get(SERVICE_EMS_TOKEN)
+        try:
+            return self._backend.get(SERVICE_EMS_TOKEN)
+        except Exception as exc:          # keyring backend error / locked vault
+            log.error("could not read the EMS token from the credential store: %s", exc)
+            return None
 
     def delete_ems_token(self) -> None:
         self._backend.delete(SERVICE_EMS_TOKEN)

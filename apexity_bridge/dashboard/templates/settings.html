@@ -20,6 +20,21 @@
       <label>Collect interval (s) <input name="collect_interval" type="number" min="5"></label>
       <label>Sync retry base (s) <input name="sync_interval" type="number" min="5"></label>
       <label>Roster interval (s) <input name="roster_interval" type="number" min="60"></label>
+      <label>Device-user sync interval (s) <input name="users_sync_interval" type="number" min="60"></label>
+      <label>Publish device user tables (PIN + name)
+        <select name="ems_push_users">
+          <option value="">(from environment)</option>
+          <option value="1">yes — let ApexityEdu name the PINs</option>
+          <option value="0">no</option>
+        </select>
+      </label>
+      <label>Answer read-only EMS commands
+        <select name="ems_execute_commands">
+          <option value="">(from environment)</option>
+          <option value="1">yes — answer DATA QUERY / CHECK</option>
+          <option value="0">no — refuse every command</option>
+        </select>
+      </label>
       <div class="dialog-actions">
         <button class="primary" type="submit">Save settings</button>
         <button type="button" id="btn-ems-test">Test EMS connection</button>
@@ -27,6 +42,7 @@
     </form>
     <div id="settings-status" class="muted"></div>
     <div id="ems-test-result"></div>
+    <div id="ems-command-status" class="muted" style="margin-top:10px"></div>
     <p class="muted">The EMS device token is stored in Windows Credential Manager,
       never in this database or .env.
       Token configured: <strong id="token-configured">…</strong></p>
@@ -38,6 +54,16 @@
     </form>
   </div>
   <div>
+    <div class="card">
+      <h3>Backend self-check</h3>
+      <p class="muted">One read-only pass over the local database, the Windows
+        credential store, EMS reachability, each registered serial and the last
+        error lines. It never posts attendance and never prints the token.</p>
+      <div class="toolbar column">
+        <button id="btn-doctor" class="primary">🩺 Run self-check</button>
+      </div>
+      <pre id="doctor-result" class="logbox hidden"></pre>
+    </div>
     <div class="card">
       <h3>Dashboard password</h3>
       <form id="password-form" class="stack">

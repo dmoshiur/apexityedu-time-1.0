@@ -4,6 +4,6 @@ Connects ZKTeco K40 biometric attendance terminals on the school LAN to the
 ApexityEdu EMS (https://apexityedu.com) with offline-first synchronisation.
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 APP_NAME = "ApexityEdu Attendance Bridge"
 SERVICE_NAME = "ApexityEduBridge"
