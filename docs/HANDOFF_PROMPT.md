@@ -119,7 +119,7 @@ What is already implemented in this branch (do not redo it):
     implementation (docs/reference/ems_reference_api.py) and 27 new tests.
 
 Your job now:
-  1. Run the full suite (scripts/run_tests.sh — 258 tests) and keep it green.
+  1. Run the full suite (scripts/run_tests.sh — 263 tests) and keep it green.
   2. Review the diff for honesty: every failure path must state what the
      server said and what the server side must implement. No "queued" as a
      success message, no invented people, no fake attendance.

@@ -98,3 +98,19 @@ def test_failed_sync_attempt_is_surfaced_for_server_correlation(ctx):
     assert check["status"] == "warn"
     assert "HTTP 500" in check["detail"]
     assert report["database"]["recent_sync_attempts"][0]["attempt_type"] == "push_attendance"
+
+
+def test_doctor_does_not_treat_denied_as_a_successful_handshake(ctx, iclock_server):
+    seed_device(ctx.repos, serial="SN-DENY", ip="192.168.0.201")
+    _worker(ctx, iclock_server.url)
+    iclock_server.denied_serials.update({"SN-DENY", "APEXITY-HEALTHCHECK"})
+
+    report = build_doctor_report(ctx, network=True)
+
+    device = report["ems"]["devices"][0]
+    assert device["handshake"] is False
+    assert "DENIED" in device["error"] and "SN-DENY" in device["error"]
+    checks = {c["id"]: c for c in report["checks"]}
+    assert checks["ems.serials"]["status"] == "fail"
+    # A DENIED synthetic health serial still proves the server is reachable.
+    assert checks["ems.health"]["status"] == "ok"

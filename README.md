@@ -48,7 +48,7 @@ without depending on ZKTime 5.0.
   sync every 15 minutes, so the data still reaches ApexityEdu when the
   app is closed between shifts.
 
-> **Honest status.** The bridge software is complete and covered by 258
+> **Honest status.** The bridge software is complete and covered by 263
 > automated tests. A branded Windows installer produces `ApexityEduBridge.exe`
 > with the product logo (Start Menu, Desktop, tray). Verified against the live
 > server on 2026-10-16: `apexityedu.com` **already speaks ZKTeco
@@ -136,6 +136,7 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
 | [`docs/WINDOWS_DEPLOYMENT.md`](docs/WINDOWS_DEPLOYMENT.md) | install / update / uninstall / service details |
 | [`docs/WINDOWS_PACKAGING.md`](docs/WINDOWS_PACKAGING.md) | **Windows .exe + installer** (PyInstaller + Inno Setup) |
 | [`docs/ACCEPTANCE_TEST_PLAN.md`](docs/ACCEPTANCE_TEST_PLAN.md) | 16-scenario on-site verification gate |
+| [`docs/FIX_DENIED_PROMPT.md`](docs/FIX_DENIED_PROMPT.md) | **EMS OFFLINE / `DENIED`** — quick checks and a copy-paste prompt for the ApexityEdu server fix |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | diagnostics bundle, common issues |
 | [`docs/SETTINGS_AND_SYNC_TROUBLESHOOTING.md`](docs/SETTINGS_AND_SYNC_TROUBLESHOOTING.md) | **step-by-step recovery** for a frozen Settings page, `ems.command_refused`, database/token problems, serial registration and Celery/backend sync errors |
 

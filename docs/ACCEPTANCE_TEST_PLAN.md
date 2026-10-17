@@ -1,7 +1,7 @@
 # Acceptance Test Plan — real K40 + live EMS
 
 Automated unit/integration coverage is in `tests/` (run:
-`scripts/run_tests.sh` — **258 tests**). This plan is the **real-device
+`scripts/run_tests.sh` — **263 tests**). This plan is the **real-device
 gate**: it must be executed on site with the actual K40 and the actual EMS
 before the bridge is declared production-ready. Unit tests passing never
 substitute for hardware verification.

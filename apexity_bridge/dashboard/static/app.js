@@ -64,12 +64,13 @@ function setEmsPill(online, label) {
 async function loadOverview() {
   try {
     const d = await api("/api/overview");
-    setEmsPill(d.ems.online, d.ems.online ? "EMS online" : "EMS offline");
+    const denied = !d.ems.online && (d.ems.denied_serials || []).length > 0;
+    setEmsPill(d.ems.online, d.ems.online ? "EMS online" : denied ? "Serial DENIED" : "EMS offline");
     const up = d.service.uptime_seconds;
     document.getElementById("st-uptime").textContent =
       up > 3600 ? `${(up / 3600).toFixed(1)}h` : `${Math.max(1, Math.round(up / 60))}m`;
     document.getElementById("st-version").textContent = `v${d.service.version} · TZ ${d.service.timezone}`;
-    document.getElementById("st-ems").textContent = d.ems.online ? "ONLINE" : "OFFLINE";
+    document.getElementById("st-ems").textContent = d.ems.online ? "ONLINE" : denied ? "DENIED" : "OFFLINE";
     document.getElementById("st-ems-detail").textContent =
       `${d.ems.protocol || "—"} · last OK ${fmtAgo(d.ems.last_ok_at)}` + (d.ems.last_error ? ` · ${d.ems.last_error}` : "");
     document.getElementById("st-devices").textContent = `${d.devices.online_now}/${d.devices.registered}`;
