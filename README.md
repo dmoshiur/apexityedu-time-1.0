@@ -48,7 +48,7 @@ without depending on ZKTime 5.0.
   sync every 15 minutes, so the data still reaches ApexityEdu when the
   app is closed between shifts.
 
-> **Honest status.** The bridge software is complete and covered by 257
+> **Honest status.** The bridge software is complete and covered by 258
 > automated tests. A branded Windows installer produces `ApexityEduBridge.exe`
 > with the product logo (Start Menu, Desktop, tray). Verified against the live
 > server on 2026-10-16: `apexityedu.com` **already speaks ZKTeco
