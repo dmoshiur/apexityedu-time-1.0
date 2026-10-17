@@ -174,7 +174,12 @@ def create_app(ctx) -> Flask:
             d for d in repos["devices"].list_active()
             if _device_online(ctx, d)
         ]
+        try:
+            token_configured = bool(ctx.secret_store.has_ems_token())
+        except Exception:                 # locked vault → treated as "not configured"
+            token_configured = False
         return ok(
+            ems_token_configured=token_configured,
             service={"version": ctx.version, "uptime_seconds": int(ctx.uptime_seconds()),
                      "timezone": ctx.settings.device_timezone},
             ems=ctx.ems_status.snapshot(),

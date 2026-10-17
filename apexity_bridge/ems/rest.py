@@ -85,8 +85,9 @@ class RestEmsClient:
         token = self._token_provider() if self._token_provider else None
         if not token:
             raise EmsAuthError(
-                "no EMS device token configured — run "
-                "'python -m apexity_bridge set-token' first"
+                "no EMS device token configured — open the dashboard Settings page "
+                "and save the device token (or run "
+                "'python -m apexity_bridge set-token')"
             )
         return {"Authorization": f"Bearer {token}"}
 

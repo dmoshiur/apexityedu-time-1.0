@@ -117,7 +117,10 @@ def main(argv: list[str] | None = None) -> int:
                        help="skip every EMS call (offline report)")
     doc_p.add_argument("--json", action="store_true", help="machine-readable output")
 
-    sub.add_parser("set-token", help="store the EMS device token in the OS credential store")
+    set_token_p = sub.add_parser("set-token",
+                                 help="store the EMS device token in the OS credential store")
+    set_token_p.add_argument("--stdin", action="store_true",
+                             help="read the token from stdin (scripts / pipes)")
     sub.add_parser("delete-token", help="remove the stored EMS device token")
     sub.add_parser("set-admin-password", help="set the dashboard admin password")
 
@@ -453,10 +456,26 @@ def _cmd_doctor(config, args) -> int:
 
 
 def _cmd_set_token(config, args) -> int:
+    """Store the EMS device token.
+
+    Interactive: a hidden prompt. Non-interactive (``--stdin``, or stdin is a
+    pipe / closed, e.g. run from a script or Task Scheduler):
+    ``echo <token> | python -m apexity_bridge set-token --stdin``.
+    The token is never accepted as a command-line argument (shell history).
+    """
     from .security.secrets import SecretStore
-    token = getpass.getpass(
-        "EMS device token (input hidden, stored in the OS credential store): "
-    ).strip()
+    use_stdin = bool(getattr(args, "stdin", False)) or not sys.stdin or not sys.stdin.isatty()
+    try:
+        if use_stdin:
+            token = (sys.stdin.readline() if sys.stdin else "").strip()
+        else:
+            token = getpass.getpass(
+                "EMS device token (input hidden, stored in the OS credential store): "
+            ).strip()
+    except (EOFError, KeyboardInterrupt, OSError):
+        print("no token received — nothing stored. Run set-token again, or paste the "
+              "token in the dashboard: Settings → EMS device token → Save.")
+        return 1
     if not token:
         print("empty token — nothing stored")
         return 1

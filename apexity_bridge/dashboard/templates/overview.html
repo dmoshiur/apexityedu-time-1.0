@@ -2,6 +2,10 @@
 {% block page %}overview{% endblock %}
 {% block title %}Overview — ApexityEdu Bridge{% endblock %}
 {% block content %}
+<div id="token-notice" class="notice warn hidden">
+  <strong>EMS device token is not set.</strong> Sync and roster refresh cannot reach the EMS until it is saved.
+  <a href="{{ url_for('settings_page') }}">Open Settings and paste the token</a> (it is stored in the OS credential store).
+</div>
 <div class="grid cards" id="stat-cards">
   <div class="card"><h3>Bridge service</h3><div class="big" id="st-uptime">…</div><div class="muted" id="st-version"></div></div>
   <div class="card"><h3>Internet / EMS</h3><div class="big" id="st-ems">…</div><div class="muted" id="st-ems-detail"></div></div>
