@@ -303,7 +303,9 @@ def _config_checks(ctx, checks: list[dict], report: dict) -> None:
 
 # ------------------------------------------------------------------------- EMS --
 def _ems_checks(ctx, checks: list[dict], report: dict) -> None:
-    from .ems.iclock import command_is_read_only, parse_command
+    from .ems.base import EmsProtocolError
+    from .ems.iclock import (command_is_read_only, denied_detail, is_denied,
+                             is_success_handshake, parse_command)
     from .ems.probe import probe_ems
 
     base = ctx.settings.ems_base_url
@@ -341,12 +343,21 @@ def _ems_checks(ctx, checks: list[dict], report: dict) -> None:
     try:
         health = client.health_check()
         info["health"] = {"ok": health.ok, "detail": health.detail}
-        _add(checks, "ems.health", "ok" if health.ok else "fail",
-             "EMS health/handshake check",
-             (health.detail or "ok")[:300],
-             "" if health.ok else
-             "A rejected handshake means the URL/path or the serial whitelist is "
-             "wrong; confirm EMS_ICLOCK_PATH=/iclock.")
+        synthetic_denied = (not health.ok) and str(health.detail or "").startswith("DENIED")
+        if synthetic_denied:
+            # The server answered; it just refuses the made-up health-check
+            # serial. That proves reachability — the real serials are what
+            # matter and are checked below.
+            _add(checks, "ems.health", "ok", "EMS reachable (iClock answers)",
+                 "the server refuses unknown serials with DENIED; real serials "
+                 "are checked individually below")
+        else:
+            _add(checks, "ems.health", "ok" if health.ok else "fail",
+                 "EMS health/handshake check",
+                 (health.detail or "ok")[:300],
+                 "" if health.ok else
+                 "A rejected handshake means the URL/path or the serial whitelist is "
+                 "wrong; confirm EMS_ICLOCK_PATH=/iclock.")
     except EmsError as exc:
         info["health"] = {"ok": False, "detail": str(exc)[:300]}
         _add(checks, "ems.health", "fail", "EMS health check failed", str(exc)[:300],
@@ -371,8 +382,14 @@ def _ems_checks(ctx, checks: list[dict], report: dict) -> None:
                  "handshake": False, "poll": False, "commands": []}
         try:
             text = client.handshake(target)
-            entry["handshake"] = True
             entry["handshake_reply"] = (text or "")[:120]
+            if getattr(client, "protocol_name", "") == "iclock":
+                if is_denied(text):
+                    raise EmsProtocolError(denied_detail(target))
+                if not is_success_handshake(text):
+                    raise EmsProtocolError(
+                        f"unexpected handshake reply: {(text or '')[:120]!r}")
+            entry["handshake"] = True
             if getattr(client, "protocol_name", "") == "iclock":
                 commands = client.poll_commands(target)
                 entry["poll"] = True

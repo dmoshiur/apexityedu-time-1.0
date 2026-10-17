@@ -289,14 +289,23 @@ class OverviewPage(QWidget):
         d = self.facade.overview()
         ems = d["ems"]
         online = ems.get("online")
-        self.pill.setText("EMS ONLINE" if online else "EMS OFFLINE")
+        denied = [] if online else list(ems.get("denied_serials") or [])
+        self.pill.setText("EMS ONLINE" if online
+                          else "SERIAL DENIED" if denied else "EMS OFFLINE")
         self.pill.setObjectName("pillOk" if online else "pillErr")
         self.pill.style().unpolish(self.pill)
         self.pill.style().polish(self.pill)
         self.cards["uptime"].set_value(_fmt_uptime(d["service"]["uptime_seconds"]))
-        self.cards["ems"].set_value("ONLINE" if online else "OFFLINE",
-                                    "ok" if online else "err")
-        self.cards["ems"].set_hint(ems.get("last_error") or ems.get("protocol") or "not connected")
+        self.cards["ems"].set_value(
+            "ONLINE" if online else "DENIED" if denied else "OFFLINE",
+            "ok" if online else "err")
+        if denied:
+            hint = (f"Server reachable, but ApexityEdu refuses serial "
+                    f"{', '.join(denied)} — register it in Biometric Devices "
+                    f"or fix Devices → EMS serial…")
+        else:
+            hint = ems.get("last_error") or ems.get("protocol") or "not connected"
+        self.cards["ems"].set_hint(hint)
         self.cards["devices"].set_value(
             f"{d['devices'].get('online_now', 0)} / {d['devices'].get('registered', 0)}")
         self.cards["students"].set_value(str(d["students"]["total"]))
@@ -1693,7 +1702,12 @@ class MainWindow(QMainWindow):
                 current.refresh()
             ov = self.facade.overview()
             n = ov["devices"].get("online_now", 0)
-            ems = "EMS online" if ov["ems"].get("online") else "EMS offline"
+            if ov["ems"].get("online"):
+                ems = "EMS online"
+            elif ov["ems"].get("denied_serials"):
+                ems = "EMS serial DENIED"
+            else:
+                ems = "EMS offline"
             self.status_lbl.setText(
                 f"●  Running in background  ·  auto-start  ·  {n} device(s) online  ·  {ems}"
             )

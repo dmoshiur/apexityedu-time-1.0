@@ -180,6 +180,20 @@ def is_success_handshake(body: str | None) -> bool:
     )
 
 
+def is_denied(body: str | None) -> bool:
+    """ApexityEdu answers a bare ``DENIED`` for a serial it does not know."""
+    return (body or "").lstrip("\ufeff").strip().upper() == "DENIED"
+
+
+def denied_detail(serial: str) -> str:
+    return (
+        f"DENIED — ApexityEdu does not accept serial {serial}. The server is "
+        "reachable; register this exact serial in ApexityEdu → Biometric "
+        "Devices, or set the serial ApexityEdu already has under Devices → "
+        "EMS serial…"
+    )
+
+
 class IclockEmsClient:
     protocol_name = "iclock"
     ATTLOG_FIELDS = 7  # PIN,time,status,verify,workcode,r1,r2
@@ -256,8 +270,9 @@ class IclockEmsClient:
         resp = self._request("GET", url)
         text = self._expect_ok_text(resp)
         ok = is_success_handshake(text)
-        return HealthResult(ok=ok, protocol=self.protocol_name,
-                            detail=f"handshake response: {self._safe_detail(text)[:120]!r}")
+        detail = (denied_detail("APEXITY-HEALTHCHECK") if is_denied(text)
+                  else f"handshake response: {self._safe_detail(text)[:120]!r}")
+        return HealthResult(ok=ok, protocol=self.protocol_name, detail=detail)
 
     def handshake(self, serial: str) -> str:
         resp = self._request(
@@ -276,12 +291,13 @@ class IclockEmsClient:
         """
         text = self.handshake(serial)
         ok = is_success_handshake(text)
-        return RegisterResult(
-            ok=ok,
-            remote_device_id=serial if ok else None,
-            detail=("handshake OK — serial accepted by EMS"
-                    if ok else f"unexpected handshake reply: {self._safe_detail(text)[:120]!r}"),
-        )
+        if ok:
+            detail = "handshake OK — serial accepted by EMS"
+        elif is_denied(text):
+            detail = denied_detail(serial)
+        else:
+            detail = f"unexpected handshake reply: {self._safe_detail(text)[:120]!r}"
+        return RegisterResult(ok=ok, remote_device_id=serial if ok else None, detail=detail)
 
     # ---------------------------------------------------------------- roster --
     def fetch_students(self, cursor: str | None = None) -> RosterPage:

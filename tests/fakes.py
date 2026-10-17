@@ -41,6 +41,7 @@ class FakeIclockServer:
         self.attlog_posts: list[dict] = []      # {"sn": str, "lines": [...]}
         self.user_reply = "OK"
         self.rejected_serials: set[str] = set()
+        self.denied_serials: set[str] = set()     # HTTP 200 "DENIED" (ApexityEdu style)
         self.command_acks: list[dict] = []    # {"sn", "body", "fields"}
         self.poll_status = 200
         self.poll_body = "OK"
@@ -60,6 +61,8 @@ class FakeIclockServer:
                     server.handshakes.append(sn)
                     if sn in server.rejected_serials:
                         return self._reply(403, "serial rejected")
+                    if sn in server.denied_serials:
+                        return self._reply(200, "DENIED")
                     if server.mode == "http500":
                         return self._reply(500, "boom")
                     # Real iClock handshake responses are a GET OPTION block;

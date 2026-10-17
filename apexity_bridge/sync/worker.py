@@ -57,6 +57,10 @@ class EmsStatus:
     server_time: str | None = None
     probe: dict | None = None
     device_presence: dict = field(default_factory=dict)
+    # EMS serials the server answered but explicitly refused (DENIED / 401 /
+    # 403). Non-empty while offline means "server reachable, serial not
+    # authorised" — a very different fix from "no internet".
+    denied_serials: list = field(default_factory=list)
     roster_supported: bool = True
     roster_error: str | None = None
     ingestion_verified: bool = False
@@ -86,6 +90,7 @@ class EmsStatus:
                 "server_time": self.server_time,
                 "probe": self.probe,
                 "device_presence": {sn: dict(state) for sn, state in self.device_presence.items()},
+                "denied_serials": list(self.denied_serials),
                 "roster_supported": self.roster_supported,
                 "roster_error": self.roster_error,
                 "ingestion_verified": self.ingestion_verified,
@@ -141,7 +146,7 @@ class SyncWorker:
     def rebuild_client(self) -> None:
         """Called when EMS settings change in the dashboard."""
         self._build_client()
-        self.status.update(online=False, device_presence={})
+        self.status.update(online=False, device_presence={}, denied_serials=[])
         self._next_health = 0.0
         self._next_users = 0.0
         self.wake()
@@ -192,7 +197,7 @@ class SyncWorker:
             if self._client.protocol_name == "iclock" and devices:
                 result = self._iclock_device_health(devices)
             else:
-                self.status.update(device_presence={})
+                self.status.update(device_presence={}, denied_serials=[])
                 result = self._client.health_check()
                 if result.ok:
                     result = HealthResult(ok=True, server_time=result.server_time)
@@ -249,10 +254,17 @@ class SyncWorker:
                 self._handle_commands(device, commands)
             except EmsError as exc:
                 state["error"] = str(exc)[:300]
+                if not state["handshake_ok"] and (
+                        isinstance(exc, EmsAuthError) or str(exc).startswith("DENIED")):
+                    state["denied"] = True
                 errors.append(f"SN {target}: {state['error']}")
                 log.warning("EMS device presence failed for SN %s: %s", target, exc)
             presence[serial] = state
-        self.status.update(device_presence=presence)
+        self.status.update(
+            device_presence=presence,
+            denied_serials=sorted({state["ems_serial"] for state in presence.values()
+                                   if state.get("denied")}),
+        )
         return HealthResult(
             ok=any(state["handshake_ok"] for state in presence.values()),
             protocol="iclock", detail="; ".join(errors),

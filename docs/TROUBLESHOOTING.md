@@ -100,6 +100,10 @@ Other checks that matter:
   in bulk.
 
 ### EMS permanently OFFLINE
+> **`DENIED` / "SERIAL DENIED"?** The server is reachable but refuses the
+> terminal's serial. Follow [`FIX_DENIED_PROMPT.md`](FIX_DENIED_PROMPT.md)
+> (quick checks + a copy-paste prompt for the ApexityEdu server side).
+
 1. **Settings → Test EMS connection** runs the full probe (iClock + REST).
 2. If `iClock endpoint: no` and `REST bridge API: no` — the EMS has no
    attendance ingestion yet. The fix is server-side; see

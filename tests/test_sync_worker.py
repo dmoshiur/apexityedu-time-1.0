@@ -331,3 +331,34 @@ def test_registration_protocol_error_does_not_disable_roster(ctx, iclock_server,
     assert worker.status.roster_supported
     assert ctx.repos["queue"].pending_count() == 1
     assert "bad handshake" in worker.status.last_error
+
+
+def test_denied_serial_is_reported_separately_from_offline(ctx, iclock_server):
+    seed_device(ctx.repos, serial="SN-BAD")
+    iclock_server.rejected_serials.add("SN-BAD")
+    worker = _worker(ctx, iclock_server.url, "iclock")
+    assert not worker._health_check()
+    snap = worker.status.snapshot()
+    assert not snap["online"]
+    assert snap["denied_serials"] == ["SN-BAD"]
+    iclock_server.rejected_serials.clear()
+    assert worker._health_check()
+    assert worker.status.snapshot()["denied_serials"] == []
+
+
+def test_unreachable_server_is_not_reported_as_denied(ctx, iclock_server):
+    seed_device(ctx.repos, serial="SN-1")
+    iclock_server.mode = "http500"
+    worker = _worker(ctx, iclock_server.url, "iclock")
+    assert not worker._health_check()
+    assert worker.status.snapshot()["denied_serials"] == []
+
+
+def test_http_200_denied_marks_serial_denied(ctx, iclock_server):
+    seed_device(ctx.repos, serial="SN-DENY")
+    iclock_server.denied_serials.add("SN-DENY")
+    worker = _worker(ctx, iclock_server.url, "iclock")
+    assert not worker._health_check()
+    snap = worker.status.snapshot()
+    assert snap["denied_serials"] == ["SN-DENY"]
+    assert "Biometric Devices" in snap["last_error"]
