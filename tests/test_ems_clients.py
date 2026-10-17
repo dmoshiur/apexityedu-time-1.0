@@ -332,3 +332,13 @@ def test_iclock_upload_error_redacts_token(iclock_server):
         IclockEmsClient(iclock_server.url, auth_token=token).push_attendance(_events(1))
     assert token not in str(error.value)
     assert "[REDACTED]" in str(error.value)
+
+
+def test_iclock_denied_handshake_names_the_serial_problem(monkeypatch):
+    from apexity_bridge.ems.iclock import IclockEmsClient
+    client = IclockEmsClient("https://ems.example")
+    monkeypatch.setattr(client, "handshake", lambda serial: "DENIED\n")
+    result = client.register_device(serial="CKXX123", model=None, firmware=None, label=None)
+    assert not result.ok
+    assert "DENIED" in result.detail and "CKXX123" in result.detail
+    assert "Biometric Devices" in result.detail
